@@ -1,11 +1,9 @@
 from uuid import uuid4
 
 import torch
-from imagen_pytorch import Unet, Imagen, ImagenTrainer
-from matplotlib import pyplot as plt
-from torchvision import datasets, transforms as T
+from imagen_pytorch import Unet, ImagenTrainer
+from imagen_pytorch_fork import ImagenFork
 from patient_dataset import PatientDataset
-import torch.nn.functional as F
 import os
 import pandas as pd
 from glob import glob
@@ -17,6 +15,26 @@ CHECKPOINT_PATH = "./checkpoint.pt"
 DATA_PATH = "E:/kidney_data"
 IMAGE_SIZE = 64
 
+
+def init_imagen():
+    unet = Unet(
+        dim=128,
+        dim_mults=(1, 2, 4, 8),
+        cond_dim=512,
+        text_embed_dim=3,
+        num_resnet_blocks=3,
+        layer_attns=(False, True, True, True),
+        layer_cross_attns=False
+    )
+
+    imagen = ImagenFork(
+        unets=unet,
+        image_sizes=IMAGE_SIZE,
+        timesteps=1000,
+        text_embed_dim=3,
+    )
+
+    return imagen
 
 def main():
     # Load the patient outcomes
@@ -47,26 +65,8 @@ def main():
     patch, outcome = dataset[0]
     print(f'Patch shape: {patch.shape}')
 
-
-    unet = Unet(
-        dim=128,
-        dim_mults=(1, 2, 4, 8),
-        cond_dim=512,
-        text_embed_dim=3,
-        num_resnet_blocks=3,
-        layer_attns=(False, True, True, True),
-        layer_cross_attns=False
-    )
-
-    imagen = Imagen(
-        unets=unet,
-        image_sizes=IMAGE_SIZE,
-        timesteps=1000,
-        text_embed_dim=3,
-    )
-
     trainer = ImagenTrainer(
-        imagen=imagen,
+        imagen=init_imagen(),
         split_valid_from_train=True  # whether to split the validation dataset from the training
     ).cuda()
 
@@ -89,7 +89,7 @@ def main():
 
         if not (i % 500) and trainer.is_main:  # is_main makes sure this can run in distributed
             conds = torch.tensor([0.0, 0.5, 0.2]).reshape(1, 1, 3).float().cuda()
-            images = trainer.sample(batch_size=1, return_pil_images=True, text_embeds=conds)
+            images = trainer.sample(batch_size=1, return_pil_images=True, text_embeds=conds, cond_scale=5.)
             for index in range(len(images)):
                 images[index].save(f'samples/sample-{i // 100}-{run_name}.png')
             trainer.save(CHECKPOINT_PATH)
