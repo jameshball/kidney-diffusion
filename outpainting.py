@@ -2,22 +2,41 @@ from uuid import uuid4
 import argparse
 
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from imagen_pytorch import ImagenTrainer
+from imagen_pytorch import ImagenTrainer, Imagen, Unet
 from torchvision.transforms import transforms
 from tqdm import tqdm
 
-from train import init_imagen, IMAGE_SIZE, CHECKPOINT_PATH
+from train import init_imagen, CHECKPOINT_PATH
 from patient_dataset import normalize_patient_outcomes, normalize_time_post_transplant, normalize_creatinine, OUTCOMES
+
+
+IMAGE_SIZE = 64
 
 
 def main():
     args = parse_args()
     print(args.height, args.width)
 
+    unet1 = Unet(
+        dim=128,
+        dim_mults=(1, 2, 4, 8),
+        cond_dim=512,
+        text_embed_dim=3,
+        num_resnet_blocks=3,
+        layer_attns=(False, True, True, True),
+        layer_cross_attns=False
+    )
+
+    imagen = Imagen(
+        unets=unet1,
+        image_sizes=64,
+        timesteps=1000,
+        text_embed_dim=3,
+    )
+
     trainer = ImagenTrainer(
-        imagen=init_imagen(),
+        imagen=imagen,
     ).cuda()
 
     trainer.load(args.checkpoint)
@@ -39,11 +58,11 @@ def main():
 
     for y, x in tqdm(patch_positions, desc="Generating image"):
         inpaint_patch = image[:, y:y+IMAGE_SIZE, x:x+IMAGE_SIZE]
-        inpaint_mask = (inpaint_patch != -1).float()
+        inpaint_mask = (inpaint_patch != -1)[0, :, :].float()
         inpaint_patch[inpaint_patch == -1] = 0
         plt.imshow(inpaint_patch.permute(1, 2, 0).cpu().numpy())
         plt.show()
-        plt.imshow(inpaint_mask.permute(1, 2, 0).cpu().numpy())
+        plt.imshow(inpaint_mask.cpu().numpy())
         plt.show()
 
         inpaint_resample_times = 1 if y == 0 and x == 0 else args.resample_times
