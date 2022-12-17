@@ -1,8 +1,8 @@
 from uuid import uuid4
 
 import torch
-from imagen_pytorch import Unet, ImagenTrainer
-from imagen_pytorch_fork import ImagenFork
+import argparse
+from imagen_pytorch import Unet, ImagenTrainer, Imagen
 from patient_dataset import PatientDataset
 import os
 import pandas as pd
@@ -13,30 +13,41 @@ import re
 
 CHECKPOINT_PATH = "./checkpoint.pt"
 DATA_PATH = "E:/kidney_data"
-IMAGE_SIZE = 64
 
 
 def init_imagen():
-    unet = Unet(
+    unet1 = Unet(
         dim=128,
         dim_mults=(1, 2, 4, 8),
-        cond_dim=512,
+        cond_dim=32,
         text_embed_dim=3,
         num_resnet_blocks=3,
         layer_attns=(False, True, True, True),
-        layer_cross_attns=False
+        layer_cross_attns=(False, True, True, True)
     )
 
-    imagen = ImagenFork(
-        unets=unet,
-        image_sizes=IMAGE_SIZE,
+    unet2 = Unet(
+        dim=128,
+        cond_dim=32,
+        dim_mults=(1, 2, 4, 8),
+        num_resnet_blocks=(2, 4, 8, 8),
+        layer_attns=(False, False, False, True),
+        layer_cross_attns=(False, False, False, True)
+    )
+
+    imagen = Imagen(
+        unets=(unet1, unet2),
+        image_sizes=(64, 256),
         timesteps=1000,
         text_embed_dim=3,
     )
 
     return imagen
 
+
 def main():
+    args = parse_args()
+
     # Load the patient outcomes
     patient_outcomes = pd.read_excel(f'{DATA_PATH}/outcomes.xlsx', 'Sheet1')
 
@@ -59,14 +70,15 @@ def main():
     print(f'Found {len(patient_outcomes)} patients with SVS files')
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{DATA_PATH}/svs/', patch_size=256, image_size=IMAGE_SIZE)
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{DATA_PATH}/svs/', patch_size=1024, image_size=256)
     print(f'Found {len(dataset)} patches')
 
     patch, outcome = dataset[0]
     print(f'Patch shape: {patch.shape}')
 
+    imagen = init_imagen()
     trainer = ImagenTrainer(
-        imagen=init_imagen(),
+        imagen=imagen,
         split_valid_from_train=True  # whether to split the validation dataset from the training
     ).cuda()
 
@@ -74,25 +86,39 @@ def main():
 
     run_name = uuid4()
 
-    if os.path.exists(CHECKPOINT_PATH):
-        trainer.load(CHECKPOINT_PATH)
+    if os.path.exists(args.checkpoint):
+        trainer.load(args.checkpoint)
 
-    # working training loop
+    trainer.print_unet_devices()
 
     for i in range(200000):
-        loss = trainer.train_step(unet_number=1, max_batch_size=4)
-        print(f'loss: {loss}')
+        loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
+        print(f'unet{args.unet_number} loss: {loss}')
 
         if not (i % 50):
-            valid_loss = trainer.valid_step(unet_number=1, max_batch_size=4)
-            print(f'valid loss: {valid_loss}')
+            valid_loss = trainer.valid_step(unet_number=args.unet_number, max_batch_size=4)
+            print(f'unet{args.unet_number} validation loss: {valid_loss}')
 
-        if not (i % 500) and trainer.is_main:  # is_main makes sure this can run in distributed
+        if not (i % 100) and trainer.is_main:  # is_main makes sure this can run in distributed
             conds = torch.tensor([0.0, 0.5, 0.2]).reshape(1, 1, 3).float().cuda()
-            images = trainer.sample(batch_size=1, return_pil_images=True, text_embeds=conds, cond_scale=5.)
+            images = trainer.sample(
+                batch_size=1,
+                return_pil_images=True,
+                text_embeds=conds,
+                cond_scale=5.,
+                start_at_unet_number=args.unet_number,
+                stop_at_unet_number=args.unet_number,
+            )
             for index in range(len(images)):
                 images[index].save(f'samples/sample-{i // 100}-{run_name}.png')
-            trainer.save(CHECKPOINT_PATH)
+            trainer.save(args.checkpoint)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--checkpoint', type=str, default=CHECKPOINT_PATH, help='Path to checkpoint')
+    parser.add_argument('--unet_number', type=int, choices=range(1, 3), help='Unet to train')
+    return parser.parse_args()
 
 
 if __name__ == '__main__':
