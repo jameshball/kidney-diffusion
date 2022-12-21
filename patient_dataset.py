@@ -88,7 +88,7 @@ class PatientDataset(Dataset):
             self.num_patches += len(patch_positions)
 
     def __len__(self):
-        return self.num_patches
+        return 8 * self.num_patches
 
     def index_to_slide(self, index):
         for i in range(len(self.slide_ids)):
@@ -99,7 +99,7 @@ class PatientDataset(Dataset):
                 index -= len(self.patch_positions[i])
 
     def __getitem__(self, index):
-        slide_index, patch_position = self.index_to_slide(index)
+        slide_index, patch_position = self.index_to_slide(index // 8)
 
         patient_id = self.patient_outcomes.iloc[slide_index]["patient_UUID"]
 
@@ -115,5 +115,27 @@ class PatientDataset(Dataset):
         patch = slide.read_block((patch_position[0], patch_position[1], self.patch_size, self.patch_size),
                                  size=(self.image_size, self.image_size))
 
-        return torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda(), torch.tensor(
-            [final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
+        # Convert the patch to a tensor
+        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
+
+        # Convert conditions to tensor
+        conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
+
+        # Rotate and flip the patch
+        if index % 8 == 0:
+            return patch, conds
+        elif index % 8 == 1:
+            return patch.flip(2), conds
+        elif index % 8 == 2:
+            return patch.flip(1), conds
+        elif index % 8 == 3:
+            return patch.flip(1).flip(2), conds
+        elif index % 8 == 4:
+            return patch.transpose(1, 2), conds
+        elif index % 8 == 5:
+            return patch.transpose(1, 2).flip(2), conds
+        elif index % 8 == 6:
+            return patch.transpose(1, 2).flip(1), conds
+        else:
+            return patch.transpose(1, 2).flip(1).flip(2), conds
+

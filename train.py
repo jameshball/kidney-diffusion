@@ -73,7 +73,7 @@ def main():
 
     # Initialise PatientDataset
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=256)
-    print(f'Found {len(dataset)} patches')
+    print(f'Found {len(dataset) // 8} patches')
 
     run_name = uuid4()
 
@@ -93,8 +93,6 @@ def main():
     if os.path.exists(args.checkpoint):
         trainer.load(args.checkpoint)
 
-    trainer.print_unet_devices()
-
     for i in range(200000):
         loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
         print(f'unet{args.unet_number} loss: {loss}')
@@ -109,7 +107,6 @@ def main():
                 batch_size=1,
                 return_pil_images=True,
                 text_embeds=conds,
-                cond_scale=5.,
                 stop_at_unet_number=args.unet_number,
             )
             for index in range(len(images)):
