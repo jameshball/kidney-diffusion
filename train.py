@@ -12,7 +12,6 @@ import re
 
 
 CHECKPOINT_PATH = "./checkpoint.pt"
-DATA_PATH = "E:/kidney_data"
 
 
 def init_imagen():
@@ -49,14 +48,14 @@ def main():
     args = parse_args()
 
     # Load the patient outcomes
-    patient_outcomes = pd.read_excel(f'{DATA_PATH}/outcomes.xlsx', 'Sheet1')
+    patient_outcomes = pd.read_excel(f'{args.data_path}/outcomes.xlsx', 'Sheet1')
 
     # Filter any patients that don't have an SVS file
-    slide_ids = [re.sub(r'\.svs', '', os.path.basename(slide)) for slide in glob(f'{DATA_PATH}/svs/*.svs')]
+    slide_ids = [re.sub(r'\.svs', '', os.path.basename(slide)) for slide in glob(f'{args.data_path}/svs/*.svs')]
     patient_outcomes = patient_outcomes[patient_outcomes['slide_UUID'].isin(slide_ids)]
 
     # Load all patient creatinine files
-    creatinine_files = glob(f'{DATA_PATH}/creatinine/*.xlsx')
+    creatinine_files = glob(f'{args.data_path}/creatinine/*.xlsx')
     patient_creatinine = {}
     for file in creatinine_files:
         df = pd.read_excel(file, 'Sheet1')
@@ -70,7 +69,7 @@ def main():
     print(f'Found {len(patient_outcomes)} patients with SVS files')
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{DATA_PATH}/svs/', patch_size=1024, image_size=256)
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=256)
     print(f'Found {len(dataset)} patches')
 
     patch, outcome = dataset[0]
@@ -118,6 +117,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', type=str, default=CHECKPOINT_PATH, help='Path to checkpoint')
     parser.add_argument('--unet_number', type=int, choices=range(1, 3), help='Unet to train')
+    parser.add_argument('--data_path', type=str, help='Path of training dataset')
     return parser.parse_args()
 
 
