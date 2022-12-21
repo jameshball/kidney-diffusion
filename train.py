@@ -1,5 +1,7 @@
+import random
 from uuid import uuid4
 
+import matplotlib.pyplot as plt
 import torch
 import argparse
 from imagen_pytorch import Unet, ImagenTrainer, Imagen
@@ -17,7 +19,7 @@ CHECKPOINT_PATH = "./checkpoint.pt"
 def init_imagen():
     unet1 = Unet(
         dim=128,
-        dim_mults=(1, 2, 3, 4),
+        dim_mults=(1, 2, 4, 8),
         cond_dim=32,
         text_embed_dim=3,
         num_resnet_blocks=3,
@@ -73,9 +75,6 @@ def main():
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=256)
     print(f'Found {len(dataset)} patches')
 
-    patch, outcome = dataset[0]
-    print(f'Patch shape: {patch.shape}')
-
     run_name = uuid4()
 
     try:
@@ -87,7 +86,6 @@ def main():
     trainer = ImagenTrainer(
         imagen=imagen,
         split_valid_from_train=True,  # whether to split the validation dataset from the training
-        precision="fp16",
     ).cuda()
 
     trainer.add_train_dataset(dataset, batch_size=16)
