@@ -75,6 +75,11 @@ def main():
     patch, outcome = dataset[0]
     print(f'Patch shape: {patch.shape}')
 
+    try:
+        os.makedirs("samples")
+    except FileExistsError:
+        pass
+
     imagen = init_imagen()
     trainer = ImagenTrainer(
         imagen=imagen,

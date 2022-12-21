@@ -43,7 +43,7 @@ class PatientDataset(Dataset):
 
         self.creatinine_avg = {}
         # Average the creatinine levels between the transplant and biopsy
-        for patient_id, creatinine in patient_creatinine.items():
+        for patient_id, creatinine in tqdm(patient_creatinine.items(), desc="Normalising data"):
             # Normalise the creatinine values
             creatinine["creatinine"] = creatinine["Value"].apply(normalize_creatinine)
 
@@ -65,13 +65,11 @@ class PatientDataset(Dataset):
         self.patient_outcomes = patient_outcomes
         self.svs_dir = svs_dir
 
-        slide_images = []
-        for slide_id in self.slide_ids:
-            slide_images.append(slideio.open_slide(self.svs_dir + slide_id + ".svs", "SVS").get_scene(0))
-
         self.patch_positions = []
         self.num_patches = 0
-        for image in tqdm(slide_images, desc="Processing slides"):
+        for slide_id in tqdm(self.slide_ids, desc="Processing slides"):
+            image = slideio.open_slide(self.svs_dir + slide_id + ".svs", "SVS").get_scene(0)
+
             # Resize the image to blocks of the patch size
             small_img = image.read_block(image.rect,
                                          size=(image.size[0] // self.patch_size, image.size[1] // self.patch_size))
