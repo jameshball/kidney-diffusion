@@ -17,7 +17,7 @@ CHECKPOINT_PATH = "./checkpoint.pt"
 def init_imagen():
     unet1 = Unet(
         dim=128,
-        dim_mults=(1, 2, 4, 8),
+        dim_mults=(1, 2, 3, 4),
         cond_dim=32,
         text_embed_dim=3,
         num_resnet_blocks=3,
@@ -26,12 +26,13 @@ def init_imagen():
     )
 
     unet2 = Unet(
-        dim=128,
+        dim=64,
         cond_dim=32,
-        dim_mults=(1, 2, 4, 8),
-        num_resnet_blocks=(2, 4, 8, 8),
+        dim_mults=(1, 2, 3, 4),
+        num_resnet_blocks=2,
+        memory_efficient=True,
         layer_attns=(False, False, False, True),
-        layer_cross_attns=(False, False, False, True)
+        layer_cross_attns=(False, False, True, True)
     )
 
     imagen = Imagen(
@@ -75,20 +76,21 @@ def main():
     patch, outcome = dataset[0]
     print(f'Patch shape: {patch.shape}')
 
+    run_name = uuid4()
+
     try:
-        os.makedirs("samples")
+        os.makedirs(f"samples/{run_name}")
     except FileExistsError:
         pass
 
     imagen = init_imagen()
     trainer = ImagenTrainer(
         imagen=imagen,
-        split_valid_from_train=True  # whether to split the validation dataset from the training
+        split_valid_from_train=True,  # whether to split the validation dataset from the training
+        precision="fp16",
     ).cuda()
 
     trainer.add_train_dataset(dataset, batch_size=16)
-
-    run_name = uuid4()
 
     if os.path.exists(args.checkpoint):
         trainer.load(args.checkpoint)
@@ -103,18 +105,17 @@ def main():
             valid_loss = trainer.valid_step(unet_number=args.unet_number, max_batch_size=4)
             print(f'unet{args.unet_number} validation loss: {valid_loss}')
 
-        if not (i % 100) and trainer.is_main:  # is_main makes sure this can run in distributed
+        if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
             conds = torch.tensor([0.0, 0.5, 0.2]).reshape(1, 1, 3).float().cuda()
             images = trainer.sample(
                 batch_size=1,
                 return_pil_images=True,
                 text_embeds=conds,
                 cond_scale=5.,
-                start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
             )
             for index in range(len(images)):
-                images[index].save(f'samples/sample-{i // 100}-{run_name}.png')
+                images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
             trainer.save(args.checkpoint)
 
 
@@ -123,6 +124,7 @@ def parse_args():
     parser.add_argument('--checkpoint', type=str, default=CHECKPOINT_PATH, help='Path to checkpoint')
     parser.add_argument('--unet_number', type=int, choices=range(1, 3), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
+    parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
     return parser.parse_args()
 
 
