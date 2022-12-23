@@ -30,11 +30,12 @@ def init_imagen():
     unet2 = Unet(
         dim=64,
         cond_dim=32,
-        dim_mults=(1, 2, 3, 4),
+        dim_mults=(1, 2, 4, 8),
         num_resnet_blocks=2,
         memory_efficient=True,
         layer_attns=(False, False, False, True),
-        layer_cross_attns=(False, False, True, True)
+        layer_cross_attns=(False, False, True, True),
+        init_conv_to_final_conv_residual=True,
     )
 
     imagen = Imagen(
