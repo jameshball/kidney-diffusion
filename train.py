@@ -4,6 +4,8 @@ from uuid import uuid4
 import matplotlib.pyplot as plt
 import torch
 import argparse
+
+from ema_pytorch import EMA
 from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
 from imagen_pytorch.trainer import restore_parts, exists
 from torch import nn
@@ -106,7 +108,19 @@ class ResettableImagenTrainer(ImagenTrainer):
                                                              loaded_obj['ema']))
 
             if exists(reset_unet):
-                print(self.ema_unets)
+                self.imagen.unets[reset_unet] = Unet(
+                    dim=64,
+                    cond_dim=32,
+                    dim_mults=(1, 2, 4, 8),
+                    num_resnet_blocks=2,
+                    memory_efficient=True,
+                    layer_attns=(False, False, False, True),
+                    layer_cross_attns=(False, False, True, True),
+                    init_conv_to_final_conv_residual=True,
+                    lowres_cond=True,
+                    text_embed_dim=3,
+                )
+                self.ema_unets[reset_unet] = EMA(self.imagen.unets[reset_unet])
 
         self.print(f'checkpoint loaded from {path}')
         return loaded_obj
