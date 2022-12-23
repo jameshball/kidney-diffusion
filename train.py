@@ -4,7 +4,9 @@ from uuid import uuid4
 import matplotlib.pyplot as plt
 import torch
 import argparse
-from imagen_pytorch import Unet, ImagenTrainer, Imagen
+from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
+from torch import nn
+
 from patient_dataset import PatientDataset
 import os
 import pandas as pd
@@ -14,6 +16,19 @@ import re
 
 
 CHECKPOINT_PATH = "./checkpoint.pt"
+
+
+class FixedNullUnet(NullUnet):
+    def __init__(self, low_res_cond=False, *args, **kwargs):
+        super().__init__()
+        self.lowres_cond = low_res_cond
+        self.dummy_parameter = nn.Parameter(torch.tensor([0.]))
+
+    def cast_model_parameters(self, *args, **kwargs):
+        return self
+
+    def forward(self, x, *args, **kwargs):
+        return x
 
 
 def init_imagen():
@@ -27,16 +42,18 @@ def init_imagen():
         layer_cross_attns=(False, True, True, True)
     )
 
-    unet2 = Unet(
-        dim=64,
-        cond_dim=32,
-        dim_mults=(1, 2, 4, 8),
-        num_resnet_blocks=2,
-        memory_efficient=True,
-        layer_attns=(False, False, False, True),
-        layer_cross_attns=(False, False, True, True),
-        init_conv_to_final_conv_residual=True,
-    )
+    # unet2 = Unet(
+    #     dim=64,
+    #     cond_dim=32,
+    #     dim_mults=(1, 2, 4, 8),
+    #     num_resnet_blocks=2,
+    #     memory_efficient=True,
+    #     layer_attns=(False, False, False, True),
+    #     layer_cross_attns=(False, False, True, True),
+    #     init_conv_to_final_conv_residual=True,
+    # )
+
+    unet2 = FixedNullUnet(low_res_cond=True)
 
     imagen = Imagen(
         unets=(unet1, unet2),
