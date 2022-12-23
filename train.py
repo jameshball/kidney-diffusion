@@ -22,6 +22,36 @@ import re
 
 
 CHECKPOINT_PATH = "./checkpoint.pt"
+TEXT_EMBED_DIM = 3
+
+
+def unet_generator(unet_number):
+    if unet_number == 1:
+        return Unet(
+            dim=128,
+            dim_mults=(1, 2, 4, 8),
+            cond_dim=32,
+            text_embed_dim=3,
+            num_resnet_blocks=3,
+            layer_attns=(False, True, True, True),
+            layer_cross_attns=(False, True, True, True)
+        )
+
+    if unet_number == 2:
+        return Unet(
+            dim=64,
+            cond_dim=32,
+            dim_mults=(1, 2, 4, 8),
+            num_resnet_blocks=2,
+            memory_efficient=True,
+            layer_attns=(False, False, False, True),
+            layer_cross_attns=(False, False, True, True),
+            init_conv_to_final_conv_residual=True,
+            text_embed_dim=TEXT_EMBED_DIM,
+            lowres_cond=True,
+        )
+
+    return None
 
 
 class FixedNullUnet(NullUnet):
@@ -69,10 +99,10 @@ class ResettableImagenTrainer(ImagenTrainer):
 
         self.steps.copy_(loaded_obj['steps'])
         if exists(reset_unet):
-            self.steps[reset_unet] = 0
+            self.steps[reset_unet-1] = 0
 
         for ind in range(0, self.num_unets):
-            if exists(reset_unet) and ind != reset_unet:
+            if exists(reset_unet) and ind == reset_unet-1:
                 continue
 
             scaler_key = f'scaler{ind}'
@@ -108,51 +138,19 @@ class ResettableImagenTrainer(ImagenTrainer):
                                                              loaded_obj['ema']))
 
             if exists(reset_unet):
-                self.imagen.unets[reset_unet] = Unet(
-                    dim=64,
-                    cond_dim=32,
-                    dim_mults=(1, 2, 4, 8),
-                    num_resnet_blocks=2,
-                    memory_efficient=True,
-                    layer_attns=(False, False, False, True),
-                    layer_cross_attns=(False, False, True, True),
-                    init_conv_to_final_conv_residual=True,
-                    lowres_cond=True,
-                    text_embed_dim=3,
-                )
-                self.ema_unets[reset_unet] = EMA(self.imagen.unets[reset_unet])
+                self.imagen.unets[reset_unet-1] = unet_generator(reset_unet)
+                self.ema_unets[reset_unet-1] = EMA(self.imagen.unets[reset_unet-1])
 
         self.print(f'checkpoint loaded from {path}')
         return loaded_obj
 
 
 def init_imagen():
-    unet1 = Unet(
-        dim=128,
-        dim_mults=(1, 2, 4, 8),
-        cond_dim=32,
-        text_embed_dim=3,
-        num_resnet_blocks=3,
-        layer_attns=(False, True, True, True),
-        layer_cross_attns=(False, True, True, True)
-    )
-
-    unet2 = Unet(
-        dim=64,
-        cond_dim=32,
-        dim_mults=(1, 2, 4, 8),
-        num_resnet_blocks=2,
-        memory_efficient=True,
-        layer_attns=(False, False, False, True),
-        layer_cross_attns=(False, False, True, True),
-        init_conv_to_final_conv_residual=True,
-    )
-
     imagen = Imagen(
-        unets=(unet1, unet2),
+        unets=(unet_generator(1), unet_generator(2)),
         image_sizes=(64, 256),
         timesteps=1000,
-        text_embed_dim=3,
+        text_embed_dim=TEXT_EMBED_DIM,
     )
 
     return imagen
@@ -206,11 +204,11 @@ def main():
 
     for i in range(200000):
         loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
-        print(f'unet{args.unet_number} loss: {loss}')
+        print(f'step {trainer.num_steps_taken(args.unet_number)}: unet{args.unet_number} loss: {loss}')
 
         if not (i % 50):
             valid_loss = trainer.valid_step(unet_number=args.unet_number, max_batch_size=4)
-            print(f'unet{args.unet_number} validation loss: {valid_loss}')
+            print(f'step {trainer.num_steps_taken(args.unet_number)}: unet{args.unet_number} validation loss: {valid_loss}')
 
         if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
             conds = torch.tensor([0.0, 0.5, 0.2]).reshape(1, 1, 3).float().cuda()
