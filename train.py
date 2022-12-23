@@ -39,8 +39,6 @@ def unet_generator(unet_number):
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            text_embed_dim=TEXT_EMBED_DIM,
-            lowres_cond=True,
         )
 
     return None
@@ -68,7 +66,7 @@ def init_imagen(unet_number):
         image_sizes=(64, 256),
         timesteps=1000,
         text_embed_dim=TEXT_EMBED_DIM,
-    )
+    ).cuda()
 
     return imagen
 
@@ -114,16 +112,13 @@ def main():
     trainer = ImagenTrainer(
         imagen=imagen,
         split_valid_from_train=True,
-    ).cuda()
+    )
 
     trainer.add_train_dataset(dataset, batch_size=16)
 
-    if args.unet_number == 1 and os.path.exists(args.unet1_checkpoint):
-        trainer.load(args.unet1_checkpoint)
-    elif args.unet_number == 2 and os.path.exists(args.unet2_checkpoint):
-        trainer.load(args.unet2_checkpoint)
-    else:
-        print('No checkpoint found')
+    checkpoint_path = args.unet1_checkpoint if args.unet_number == 1 else args.unet2_checkpoint
+
+    trainer.load(checkpoint_path, noop_if_not_exist=True)
 
     for i in range(200000):
         loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
@@ -139,13 +134,13 @@ def main():
                 batch_size=1,
                 return_pil_images=True,
                 text_embeds=conds,
-                start_image_or_video=lowres_image,
+                start_image_or_video=lowres_image.unsqueeze(0),
                 start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
             )
             for index in range(len(images)):
                 images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
-            trainer.save(args.checkpoint)
+            trainer.save(checkpoint_path)
 
 
 def parse_args():
