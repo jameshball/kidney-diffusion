@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import argparse
 
-from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
+from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024
 from matplotlib import pyplot as plt
 from torch import nn
 from torch.utils.data import Subset, DataLoader
@@ -46,16 +46,7 @@ def unet_generator(unet_number):
         )
     
     if unet_number == 3:
-        return Unet(
-            dim=64,
-            cond_dim=512,
-            dim_mults=(1, 2, 3, 4),
-            num_resnet_blocks=2,
-            memory_efficient=True,
-            layer_attns=(False, False, False, True),
-            layer_cross_attns=(False, False, True, True),
-            init_conv_to_final_conv_residual=True,
-        )
+        return SRUnet1024()
 
     return None
 
