@@ -49,7 +49,7 @@ def unet_generator(unet_number):
         return Unet(
             dim=128,
             cond_dim=512,
-            dim_mults=(1, 2, 4, 8),
+            dim_mults=(1, 2, 3, 4),
             num_resnet_blocks=2,
             memory_efficient=True,
             layer_attns=(False, False, False, True),
