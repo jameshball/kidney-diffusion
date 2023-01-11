@@ -1,10 +1,13 @@
 from uuid import uuid4
 
+import numpy as np
 import torch
 import argparse
 
 from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
+from matplotlib import pyplot as plt
 from torch import nn
+from torch.utils.data import Subset, DataLoader
 
 from patient_dataset import PatientDataset
 import os
@@ -15,6 +18,7 @@ import re
 
 
 TEXT_EMBED_DIM = 3
+SPLIT_VALID_FRACTION = 0.025
 
 
 def unet_generator(unet_number):
@@ -52,7 +56,6 @@ def unet_generator(unet_number):
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
         )
-
 
     return None
 
@@ -111,7 +114,7 @@ def main():
 
     # Initialise PatientDataset
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=1024)
-    print(f'Found {len(dataset) // 8} patches')
+    print(f'Found {len(dataset) // 32} patches')
 
     lowres_image = dataset[0][0]
 
@@ -122,15 +125,25 @@ def main():
     except FileExistsError:
         pass
 
+    train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
+    indices = list(range(len(dataset)))
+    train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
+    valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
+
+    print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
+
     imagen = init_imagen(args.unet_number)
-    trainer = ImagenTrainer(
-        imagen=imagen,
-        split_valid_from_train=True,
-    )
+    trainer = ImagenTrainer(imagen=imagen)
 
     trainer.add_train_dataset(dataset, batch_size=16)
+    trainer.add_valid_dataset(valid_dataset, batch_size=16)
 
-    checkpoint_path = args.unet1_checkpoint if args.unet_number == 1 else args.unet2_checkpoint
+    if args.unet_number == 1:
+        checkpoint_path = args.unet1_checkpoint
+    elif args.unet_number == 2:
+        checkpoint_path = args.unet2_checkpoint
+    else:
+        checkpoint_path = args.unet3_checkpoint
 
     trainer.load(checkpoint_path, noop_if_not_exist=True)
 
