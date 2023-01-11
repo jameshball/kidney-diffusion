@@ -47,7 +47,7 @@ def unet_generator(unet_number):
     
     if unet_number == 3:
         return Unet(
-            dim=128,
+            dim=96,
             cond_dim=512,
             dim_mults=(1, 2, 3, 4),
             num_resnet_blocks=2,
