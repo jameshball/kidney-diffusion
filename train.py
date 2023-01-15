@@ -46,7 +46,16 @@ def unet_generator(unet_number):
         )
     
     if unet_number == 3:
-        return SRUnet1024()
+        return Unet(
+            dim=128,
+            cond_dim=512,
+            dim_mults=(1, 2, 4, 8),
+            num_resnet_blocks=(2, 4, 8, 8),
+            memory_efficient=True,
+            layer_attns=False,
+            layer_cross_attns=(False, False, False, True),
+            init_conv_to_final_conv_residual=True,
+        )
 
     return None
 
@@ -74,6 +83,7 @@ def init_imagen(unet_number):
         image_sizes=(64, 256, 1024),
         timesteps=1000,
         text_embed_dim=TEXT_EMBED_DIM,
+        random_crop_sizes=(None, None, 256),
     ).cuda()
 
     return imagen
