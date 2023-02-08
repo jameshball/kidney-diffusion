@@ -1,17 +1,13 @@
-import random
 from uuid import uuid4
 
-import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import argparse
 
-from ema_pytorch import EMA
-from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
-from imagen_pytorch.trainer import restore_parts, exists
+from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024
+from matplotlib import pyplot as plt
 from torch import nn
-
-from imagen_pytorch.version import __version__
-from packaging import version
+from torch.utils.data import Subset, DataLoader
 
 from patient_dataset import PatientDataset
 import os
@@ -21,16 +17,16 @@ from glob import glob
 import re
 
 
-CHECKPOINT_PATH = "./checkpoint.pt"
 TEXT_EMBED_DIM = 3
+SPLIT_VALID_FRACTION = 0.025
 
 
 def unet_generator(unet_number):
     if unet_number == 1:
         return Unet(
-            dim=128,
-            dim_mults=(1, 2, 4, 8),
-            cond_dim=32,
+            dim=256,
+            dim_mults=(1, 2, 3, 4),
+            cond_dim=512,
             text_embed_dim=3,
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
@@ -39,25 +35,35 @@ def unet_generator(unet_number):
 
     if unet_number == 2:
         return Unet(
-            dim=64,
-            cond_dim=32,
+            dim=128,
+            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
             num_resnet_blocks=2,
             memory_efficient=True,
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            text_embed_dim=TEXT_EMBED_DIM,
-            lowres_cond=True,
+        )
+    
+    if unet_number == 3:
+        return Unet(
+            dim=128,
+            cond_dim=512,
+            dim_mults=(1, 2, 4, 8),
+            num_resnet_blocks=(2, 4, 8, 8),
+            memory_efficient=True,
+            layer_attns=False,
+            layer_cross_attns=(False, False, False, True),
+            init_conv_to_final_conv_residual=True,
         )
 
     return None
 
 
 class FixedNullUnet(NullUnet):
-    def __init__(self, low_res_cond=False, *args, **kwargs):
+    def __init__(self, lowres_cond=False, *args, **kwargs):
         super().__init__()
-        self.lowres_cond = low_res_cond
+        self.lowres_cond = lowres_cond
         self.dummy_parameter = nn.Parameter(torch.tensor([0.]))
 
     def cast_model_parameters(self, *args, **kwargs):
@@ -67,91 +73,18 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-class ResettableImagenTrainer(ImagenTrainer):
-    def load(self, path, only_model=False, strict=True, noop_if_not_exist=False, reset_unet=None):
-        fs = self.fs
-
-        if noop_if_not_exist and not fs.exists(path):
-            self.print(f'trainer checkpoint not found at {str(path)}')
-            return
-
-        assert fs.exists(path), f'{path} does not exist'
-
-        self.reset_ema_unets_all_one_device()
-
-        # to avoid extra GPU memory usage in main process when using Accelerate
-
-        with fs.open(path) as f:
-            loaded_obj = torch.load(f, map_location='cpu')
-
-        if version.parse(__version__) != version.parse(loaded_obj['version']):
-            self.print(f'loading saved imagen at version {loaded_obj["version"]}, but current package version is {__version__}')
-
-        try:
-            self.imagen.load_state_dict(loaded_obj['model'], strict = strict)
-        except RuntimeError:
-            print("Failed loading state dict. Trying partial load")
-            self.imagen.load_state_dict(restore_parts(self.imagen.state_dict(),
-                                                      loaded_obj['model']))
-
-        if only_model:
-            return loaded_obj
-
-        self.steps.copy_(loaded_obj['steps'])
-        if exists(reset_unet):
-            self.steps[reset_unet-1] = 0
-
-        for ind in range(0, self.num_unets):
-            if exists(reset_unet) and ind == reset_unet-1:
-                continue
-
-            scaler_key = f'scaler{ind}'
-            optimizer_key = f'optim{ind}'
-            scheduler_key = f'scheduler{ind}'
-            warmup_scheduler_key = f'warmup{ind}'
-
-            scaler = getattr(self, scaler_key)
-            optimizer = getattr(self, optimizer_key)
-            scheduler = getattr(self, scheduler_key)
-            warmup_scheduler = getattr(self, warmup_scheduler_key)
-
-            if exists(scheduler) and scheduler_key in loaded_obj:
-                scheduler.load_state_dict(loaded_obj[scheduler_key])
-
-            if exists(warmup_scheduler) and warmup_scheduler_key in loaded_obj:
-                warmup_scheduler.load_state_dict(loaded_obj[warmup_scheduler_key])
-
-            if exists(optimizer):
-                try:
-                    optimizer.load_state_dict(loaded_obj[optimizer_key])
-                    scaler.load_state_dict(loaded_obj[scaler_key])
-                except:
-                    self.print('could not load optimizer and scaler, possibly because you have turned on mixed precision training since the last run. resuming with new optimizer and scalers')
-
-        if self.use_ema:
-            assert 'ema' in loaded_obj
-            try:
-                self.ema_unets.load_state_dict(loaded_obj['ema'], strict=strict)
-            except RuntimeError:
-                print("Failed loading state dict. Trying partial load")
-                self.ema_unets.load_state_dict(restore_parts(self.ema_unets.state_dict(),
-                                                             loaded_obj['ema']))
-
-            if exists(reset_unet):
-                self.imagen.unets[reset_unet-1] = unet_generator(reset_unet)
-                self.ema_unets[reset_unet-1] = EMA(self.imagen.unets[reset_unet-1])
-
-        self.print(f'checkpoint loaded from {path}')
-        return loaded_obj
-
-
-def init_imagen():
+def init_imagen(unet_number):
     imagen = Imagen(
-        unets=(unet_generator(1), unet_generator(2)),
-        image_sizes=(64, 256),
+        unets=(
+            unet_generator(1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+        ),
+        image_sizes=(64, 256, 1024),
         timesteps=1000,
         text_embed_dim=TEXT_EMBED_DIM,
-    )
+        random_crop_sizes=(None, None, 256),
+    ).cuda()
 
     return imagen
 
@@ -181,8 +114,10 @@ def main():
     print(f'Found {len(patient_outcomes)} patients with SVS files')
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=256)
-    print(f'Found {len(dataset) // 8} patches')
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=1024)
+    print(f'Found {len(dataset) // 32} patches')
+
+    lowres_image = dataset[0][0]
 
     run_name = uuid4()
 
@@ -191,16 +126,27 @@ def main():
     except FileExistsError:
         pass
 
-    imagen = init_imagen()
-    trainer = ResettableImagenTrainer(
-        imagen=imagen,
-        split_valid_from_train=True,
-    ).cuda()
+    train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
+    indices = list(range(len(dataset)))
+    train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
+    valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
+
+    print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
+
+    imagen = init_imagen(args.unet_number)
+    trainer = ImagenTrainer(imagen=imagen)
 
     trainer.add_train_dataset(dataset, batch_size=16)
+    trainer.add_valid_dataset(valid_dataset, batch_size=16)
 
-    if os.path.exists(args.checkpoint):
-        trainer.load(args.checkpoint, reset_unet=args.unet_number if args.reset_unet else None)
+    if args.unet_number == 1:
+        checkpoint_path = args.unet1_checkpoint
+    elif args.unet_number == 2:
+        checkpoint_path = args.unet2_checkpoint
+    else:
+        checkpoint_path = args.unet3_checkpoint
+
+    trainer.load(checkpoint_path, noop_if_not_exist=True)
 
     for i in range(200000):
         loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
@@ -216,20 +162,23 @@ def main():
                 batch_size=1,
                 return_pil_images=True,
                 text_embeds=conds,
+                start_image_or_video=lowres_image.unsqueeze(0),
+                start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
             )
             for index in range(len(images)):
                 images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
-            trainer.save(args.checkpoint)
+            trainer.save(checkpoint_path)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default=CHECKPOINT_PATH, help='Path to checkpoint')
-    parser.add_argument('--unet_number', type=int, choices=range(1, 3), help='Unet to train')
+    parser.add_argument('--unet1_checkpoint', type=str, default='./unet1_checkpoint.pt', help='Path to checkpoint for unet1 model')
+    parser.add_argument('--unet2_checkpoint', type=str, default='./unet2_checkpoint.pt', help='Path to checkpoint for unet2 model')
+    parser.add_argument('--unet3_checkpoint', type=str, default='./unet3_checkpoint.pt', help='Path to checkpoint for unet3 model')
+    parser.add_argument('--unet_number', type=int, choices=range(1, 4), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
-    parser.add_argument('--reset_unet', action='store_true', help='Reset the unet weights')
     return parser.parse_args()
 
 

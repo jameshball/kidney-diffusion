@@ -7,6 +7,9 @@ from tqdm import tqdm
 from skimage import color
 import numpy as np
 
+NUM_FLIPS_ROTATIONS = 8
+NUM_TRANSLATIONS =  4
+
 # Possible kidney outcomes, ordered by severity. DWFG is ignored here as it does not indicate a poor outcome.
 OUTCOMES = ["Functioning", "25%", "50%", "Graft_Loss", "DWGL"]
 
@@ -88,7 +91,7 @@ class PatientDataset(Dataset):
             self.num_patches += len(patch_positions)
 
     def __len__(self):
-        return 8 * self.num_patches
+        return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_patches
 
     def index_to_slide(self, index):
         for i in range(len(self.slide_ids)):
@@ -99,7 +102,7 @@ class PatientDataset(Dataset):
                 index -= len(self.patch_positions[i])
 
     def __getitem__(self, index):
-        slide_index, patch_position = self.index_to_slide(index // 8)
+        slide_index, patch_position = self.index_to_slide(index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS))
 
         patient_id = self.patient_outcomes.iloc[slide_index]["patient_UUID"]
 
@@ -112,8 +115,18 @@ class PatientDataset(Dataset):
             avg_creatinine = 0
 
         slide = slideio.open_slide(self.svs_dir + self.slide_ids.iloc[slide_index] + ".svs", "SVS").get_scene(0)
-        patch = slide.read_block((patch_position[0], patch_position[1], self.patch_size, self.patch_size),
-                                 size=(self.image_size, self.image_size))
+
+        translation_index = index // NUM_FLIPS_ROTATIONS
+        if translation_index % NUM_TRANSLATIONS == 0:
+            x, y = (patch_position[0], patch_position[1])
+        elif translation_index % NUM_TRANSLATIONS == 1:
+            x, y = (patch_position[0] + self.patch_size // 2, patch_position[1])
+        elif translation_index % NUM_TRANSLATIONS == 2:
+            x, y = (patch_position[0] + self.patch_size // 2, patch_position[1] + self.patch_size // 2)
+        else:
+            x, y = (patch_position[0], patch_position[1] + self.patch_size // 2)
+            
+        patch = slide.read_block((x, y, self.patch_size, self.patch_size), size=(self.image_size, self.image_size))
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
@@ -122,19 +135,19 @@ class PatientDataset(Dataset):
         conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
 
         # Rotate and flip the patch
-        if index % 8 == 0:
+        if index % NUM_FLIPS_ROTATIONS == 0:
             return patch, conds
-        elif index % 8 == 1:
+        elif index % NUM_FLIPS_ROTATIONS == 1:
             return patch.flip(2), conds
-        elif index % 8 == 2:
+        elif index % NUM_FLIPS_ROTATIONS == 2:
             return patch.flip(1), conds
-        elif index % 8 == 3:
+        elif index % NUM_FLIPS_ROTATIONS == 3:
             return patch.flip(1).flip(2), conds
-        elif index % 8 == 4:
+        elif index % NUM_FLIPS_ROTATIONS == 4:
             return patch.transpose(1, 2), conds
-        elif index % 8 == 5:
+        elif index % NUM_FLIPS_ROTATIONS == 5:
             return patch.transpose(1, 2).flip(2), conds
-        elif index % 8 == 6:
+        elif index % NUM_FLIPS_ROTATIONS == 6:
             return patch.transpose(1, 2).flip(1), conds
         else:
             return patch.transpose(1, 2).flip(1).flip(2), conds
