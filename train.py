@@ -120,6 +120,14 @@ def main():
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024)
     print(f'Found {len(dataset) // 32} patches')
 
+    for i in range(1, 10, 2):
+        patch, conds, _, labelmap = dataset[i]
+        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
+        # overlay labelmap with many channels
+        for j in range(labelmap.shape[2]):
+            plt.imshow(labelmap[:, :, j].cpu().numpy(), alpha=0.5)
+        plt.show()
+
     lowres_image = dataset[0][0]
 
     run_name = uuid4()

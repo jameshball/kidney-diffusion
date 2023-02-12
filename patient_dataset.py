@@ -94,7 +94,7 @@ class PatientDataset(Dataset):
             self.num_patches += len(patch_positions)
 
         # Add the annotated data from the h5file:
-        self.h5_ids = list()
+        self.h5_ids = []
         with h5py.File(self.h5_path, 'r') as h5:
             for name, cut in h5.items():
                 if any([x in cut.keys() for x in self.labels.keys()]):
@@ -105,7 +105,7 @@ class PatientDataset(Dataset):
         print("Images IDs:\n{}".format('\n'.join(self.h5_ids)))
 
     def __len__(self):
-        return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_patches
+        return 2 * NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_patches
 
     def index_to_slide(self, index):
         for i in range(len(self.slide_ids)):
@@ -115,7 +115,11 @@ class PatientDataset(Dataset):
             else:
                 index -= len(self.patch_positions[i])
 
-    def __getitem__(self, index):
+    def __getitem__(self, original_index):
+        index = original_index // 2
+
+        labelmap = np.zeros((1024, 1024, len(set(self.labels.keys()))))
+
         slide_index, patch_position = self.index_to_slide(index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS))
 
         patient_id = self.patient_outcomes.iloc[slide_index]["patient_UUID"]
@@ -128,41 +132,59 @@ class PatientDataset(Dataset):
         else:
             avg_creatinine = 0
 
-        slide = slideio.open_slide(self.svs_dir + self.slide_ids.iloc[slide_index] + ".svs", "SVS").get_scene(0)
+        if original_index % 2 == 0:
+            slide = slideio.open_slide(self.svs_dir + self.slide_ids.iloc[slide_index] + ".svs", "SVS").get_scene(0)
 
-        translation_index = index // NUM_FLIPS_ROTATIONS
-        if translation_index % NUM_TRANSLATIONS == 0:
-            x, y = (patch_position[0], patch_position[1])
-        elif translation_index % NUM_TRANSLATIONS == 1:
-            x, y = (patch_position[0] + self.patch_size // 2, patch_position[1])
-        elif translation_index % NUM_TRANSLATIONS == 2:
-            x, y = (patch_position[0] + self.patch_size // 2, patch_position[1] + self.patch_size // 2)
+            translation_index = index // NUM_FLIPS_ROTATIONS
+            if translation_index % NUM_TRANSLATIONS == 0:
+                x, y = (patch_position[0], patch_position[1])
+            elif translation_index % NUM_TRANSLATIONS == 1:
+                x, y = (patch_position[0] + self.patch_size // 2, patch_position[1])
+            elif translation_index % NUM_TRANSLATIONS == 2:
+                x, y = (patch_position[0] + self.patch_size // 2, patch_position[1] + self.patch_size // 2)
+            else:
+                x, y = (patch_position[0], patch_position[1] + self.patch_size // 2)
+
+            patch = slide.read_block((x, y, self.patch_size, self.patch_size), size=(self.image_size, self.image_size))
         else:
-            x, y = (patch_position[0], patch_position[1] + self.patch_size // 2)
-            
-        patch = slide.read_block((x, y, self.patch_size, self.patch_size), size=(self.image_size, self.image_size))
+            patch_index = index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS)
+            patch_index = patch_index % len(self.h5_ids)
+
+            with h5py.File(self.h5_path, 'r') as h5:
+                # Get raw image and combine masks
+                patch = np.array(h5[self.h5_ids[patch_index]].get('rawimage'))
+
+                if patch.shape[2] == 4:  # Get RGB data if images have alpha channel
+                    patch = patch[:, :, :3]
+
+                for labelname in self.labels.keys():
+                    if labelname in h5[self.h5_ids[patch_index]].keys():
+                        mask = np.array(h5[self.h5_ids[patch_index]].get(labelname))
+                        labelmap[mask > 0, self.labels[labelname] - 1] = 1
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
+
+        labelmap = torch.from_numpy(labelmap).float().cuda()
 
         # Convert conditions to tensor
         conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
 
         # Rotate and flip the patch
         if index % NUM_FLIPS_ROTATIONS == 0:
-            return patch, conds
+            return patch, conds, None, labelmap
         elif index % NUM_FLIPS_ROTATIONS == 1:
-            return patch.flip(2), conds
+            return patch.flip(2), conds, None, labelmap.flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 2:
-            return patch.flip(1), conds
+            return patch.flip(1), conds, None, labelmap.flip(1)
         elif index % NUM_FLIPS_ROTATIONS == 3:
-            return patch.flip(1).flip(2), conds
+            return patch.flip(1).flip(2), conds, None, labelmap.flip(1).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 4:
-            return patch.transpose(1, 2), conds
+            return patch.transpose(1, 2), conds, None, labelmap.transpose(1, 2)
         elif index % NUM_FLIPS_ROTATIONS == 5:
-            return patch.transpose(1, 2).flip(2), conds
+            return patch.transpose(1, 2).flip(2), conds, None, labelmap.transpose(1, 2).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 6:
-            return patch.transpose(1, 2).flip(1), conds
+            return patch.transpose(1, 2).flip(1), conds, None, labelmap.transpose(1, 2).flip(1)
         else:
-            return patch.transpose(1, 2).flip(1).flip(2), conds
+            return patch.transpose(1, 2).flip(1).flip(2), conds, None, labelmap.transpose(1, 2).flip(1).flip(2)
 
