@@ -118,7 +118,7 @@ class PatientDataset(Dataset):
     def __getitem__(self, original_index):
         index = original_index // 2
 
-        labelmap = np.zeros((1024, 1024, len(set(self.labels.keys()))))
+        labelmap = np.zeros((1024, 1024, len(set(self.labels.values()))))
 
         slide_index, patch_position = self.index_to_slide(index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS))
 
