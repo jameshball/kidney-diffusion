@@ -30,8 +30,8 @@ class PatientDataset(Dataset):
 
         self.patch_size = patch_size
         self.image_size = image_size
-	self.labels = {'Tubuli': 1,Vein': 2,'Vessel_indeterminate': 2,  'Artery': 3, 'Glomerui': 4}
-	self.h5_path = h5_path
+        self.labels = {'Tubuli': 1, 'Vein': 2,'Vessel_indeterminate': 2,  'Artery': 3, 'Glomerui': 4}
+        self.h5_path = h5_path
 
         # Normalise the patient outcomes
         patient_outcomes["final_outcome"] = patient_outcomes["final_outcome"].apply(normalize_patient_outcomes)
@@ -90,7 +90,7 @@ class PatientDataset(Dataset):
             self.patch_positions.append(patch_positions)
             self.num_patches += len(patch_positions)
 
-    #Add the annotated data from the h5file: 
+        #Add the annotated data from the h5file:
         self.h5_ids = list()
         with h5py.File(self.h5_path, 'r') as h5:
             for name, cut in h5.items():
