@@ -113,8 +113,11 @@ def main():
 
     print(f'Found {len(patient_outcomes)} patients with SVS files')
 
+    # Load the labelled data from the h5 labelbox download
+    patient_labelled_dir = f'{args.data_path}/results.h5'
+
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patch_size=1024, image_size=1024)
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024)
     print(f'Found {len(dataset) // 32} patches')
 
     lowres_image = dataset[0][0]

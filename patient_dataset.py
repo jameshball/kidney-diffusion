@@ -1,3 +1,4 @@
+import h5py
 import pandas as pd
 import torch
 from matplotlib import pyplot as plt
@@ -27,11 +28,13 @@ def normalize_creatinine(x):
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, patch_size=256, image_size=64):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64):
         super().__init__()
 
         self.patch_size = patch_size
         self.image_size = image_size
+        self.labels = {'Tubuli': 1, 'Vein': 2, 'Vessel_indeterminate': 2, 'Artery': 3, 'Glomerui': 4}
+        self.h5_path = h5_path
 
         # Normalise the patient outcomes
         patient_outcomes["final_outcome"] = patient_outcomes["final_outcome"].apply(normalize_patient_outcomes)
@@ -89,6 +92,17 @@ class PatientDataset(Dataset):
 
             self.patch_positions.append(patch_positions)
             self.num_patches += len(patch_positions)
+
+        # Add the annotated data from the h5file:
+        self.h5_ids = list()
+        with h5py.File(self.h5_path, 'r') as h5:
+            for name, cut in h5.items():
+                if any([x in cut.keys() for x in self.labels.keys()]):
+                    if not name.endswith('_0'):  # Omit repeated annotations
+                        self.h5_ids.append(name)
+                else:
+                    print(f'No label data for:{name}')
+        print("Images IDs:\n{}".format('\n'.join(self.h5_ids)))
 
     def __len__(self):
         return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_patches
