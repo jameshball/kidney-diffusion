@@ -1,11 +1,12 @@
 from uuid import uuid4
 
+import matplotlib
 import numpy as np
 import torch
 import argparse
 
 from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt, cm
 from torch import nn
 from torch.utils.data import Subset, DataLoader
 
@@ -120,12 +121,13 @@ def main():
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024)
     print(f'Found {len(dataset) // 32} patches')
 
-    for i in range(1, 10, 2):
-        patch, conds, _, labelmap = dataset[i]
+    for i in [1, 101, 201, 301, 401, 501, 601, 701, 801, 901]:
+        patch, conds, labelmap = dataset[i]
+        print(patch, labelmap)
         plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        # overlay labelmap with many channels
-        for j in range(labelmap.shape[2]):
-            plt.imshow(labelmap[:, :, j].cpu().numpy(), alpha=0.5)
+        for j in range(labelmap.shape[0]):
+            data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
+            plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
         plt.show()
 
     lowres_image = dataset[0][0]
@@ -145,7 +147,7 @@ def main():
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
     imagen = init_imagen(args.unet_number)
-    trainer = ImagenTrainer(imagen=imagen)
+    trainer = ImagenTrainer(imagen=imagen, dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),)
 
     trainer.add_train_dataset(dataset, batch_size=16)
     trainer.add_valid_dataset(valid_dataset, batch_size=16)

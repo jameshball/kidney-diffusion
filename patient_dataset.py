@@ -165,26 +165,26 @@ class PatientDataset(Dataset):
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
 
-        labelmap = torch.from_numpy(labelmap).float().cuda()
+        labelmap = torch.from_numpy(labelmap).permute((2, 0, 1)).float().cuda()
 
         # Convert conditions to tensor
         conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
 
         # Rotate and flip the patch
         if index % NUM_FLIPS_ROTATIONS == 0:
-            return patch, conds, None, labelmap
+            return patch, conds, labelmap
         elif index % NUM_FLIPS_ROTATIONS == 1:
-            return patch.flip(2), conds, None, labelmap.flip(2)
+            return patch.flip(2), conds, labelmap.flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 2:
-            return patch.flip(1), conds, None, labelmap.flip(1)
+            return patch.flip(1), conds, labelmap.flip(1)
         elif index % NUM_FLIPS_ROTATIONS == 3:
-            return patch.flip(1).flip(2), conds, None, labelmap.flip(1).flip(2)
+            return patch.flip(1).flip(2), conds, labelmap.flip(1).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 4:
-            return patch.transpose(1, 2), conds, None, labelmap.transpose(1, 2)
+            return patch.transpose(1, 2), conds, labelmap.transpose(1, 2)
         elif index % NUM_FLIPS_ROTATIONS == 5:
-            return patch.transpose(1, 2).flip(2), conds, None, labelmap.transpose(1, 2).flip(2)
+            return patch.transpose(1, 2).flip(2), conds, labelmap.transpose(1, 2).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 6:
-            return patch.transpose(1, 2).flip(1), conds, None, labelmap.transpose(1, 2).flip(1)
+            return patch.transpose(1, 2).flip(1), conds, labelmap.transpose(1, 2).flip(1)
         else:
-            return patch.transpose(1, 2).flip(1).flip(2), conds, None, labelmap.transpose(1, 2).flip(1).flip(2)
+            return patch.transpose(1, 2).flip(1).flip(2), conds, labelmap.transpose(1, 2).flip(1).flip(2)
 
