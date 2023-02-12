@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import argparse
 
-from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024
+from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024, ElucidatedImagen
 from matplotlib import pyplot as plt, cm
 from torch import nn
 from torch.utils.data import Subset, DataLoader
@@ -31,7 +31,8 @@ def unet_generator(unet_number):
             text_embed_dim=3,
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
-            layer_cross_attns=(False, True, True, True)
+            layer_cross_attns=(False, True, True, True),
+            cond_images_channels=4,
         )
 
     if unet_number == 2:
@@ -44,6 +45,7 @@ def unet_generator(unet_number):
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
+            cond_images_channels=4,
         )
     
     if unet_number == 3:
@@ -56,6 +58,7 @@ def unet_generator(unet_number):
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
+            cond_images_channels=4,
         )
 
     return None
@@ -75,16 +78,31 @@ class FixedNullUnet(NullUnet):
 
 
 def init_imagen(unet_number):
-    imagen = Imagen(
+    # imagen = Imagen(
+    #    unets=(
+    #        unet_generator(1) if unet_number == 1 else FixedNullUnet(),
+    #        unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+    #        unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+    #    ),
+    #    image_sizes=(64, 256, 1024),
+    #    timesteps=1000,
+    #    text_embed_dim=TEXT_EMBED_DIM,
+    #    random_crop_sizes=(None, None, 256),
+    #).cuda()
+
+    imagen = ElucidatedImagen(
         unets=(
             unet_generator(1) if unet_number == 1 else FixedNullUnet(),
             unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
             unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
-        timesteps=1000,
+        cond_drop_prob=0.1,
+        num_sample_steps=(32, 128, 128),
         text_embed_dim=TEXT_EMBED_DIM,
         random_crop_sizes=(None, None, 256),
+        sigma_min=0.002,           # min noise level
+        sigma_max=(80, 320, 1280), # max noise level, @crowsonkb recommends double the max noise level for upsampler
     ).cuda()
 
     return imagen
@@ -123,14 +141,13 @@ def main():
 
     for i in [1, 101, 201, 301, 401, 501, 601, 701, 801, 901]:
         patch, conds, labelmap = dataset[i]
-        print(patch, labelmap)
         plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
         for j in range(labelmap.shape[0]):
             data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
             plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
         plt.show()
 
-    lowres_image = dataset[0][0]
+    lowres_image, _, default_labelmap = dataset[101]
 
     run_name = uuid4()
 
@@ -178,6 +195,7 @@ def main():
                 start_image_or_video=lowres_image.unsqueeze(0),
                 start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
+                cond_images=default_labelmap.unsqueeze(0),
             )
             for index in range(len(images)):
                 images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
