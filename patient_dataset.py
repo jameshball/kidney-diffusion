@@ -102,6 +102,27 @@ class PatientDataset(Dataset):
                         self.h5_ids.append(name)
                 else:
                     print(f'No label data for:{name}')
+        
+	  # Using the 6 slides with the most patches as the test set
+	  unique_slides = Counter([x.split(' ')[0] for x in ids])
+        
+        test_slide = []
+        test_slide_temp = unique_slides.most_common(6)
+        for t in test_slide_temp: test_slide += [t[0]]
+        print(test_slide_temp, test_slide)
+
+        ids_train, ids_test = [], []
+        for x in ids:
+            bool_test = False
+            for t in test_slide: 
+                if t in x: bool_test = True 
+            if bool_test:
+                ids_test.append(x)
+            else:
+                ids_train.append(x)
+        print(ids_test)
+        self.h5_ids = ids_train
+        self.ids_test = ids_test
         print("Images IDs:\n{}".format('\n'.join(self.h5_ids)))
 
     def __len__(self):
