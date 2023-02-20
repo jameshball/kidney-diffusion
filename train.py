@@ -87,8 +87,8 @@ def init_imagen(unet_number):
             unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
-        timesteps=256,
-        pred_objectives="v",
+        timesteps=(1024, 256, 256),
+        pred_objectives=("noise", "v", "v"),
         text_embed_dim=TEXT_EMBED_DIM,
         random_crop_sizes=(None, None, 256),
     ).cuda()
