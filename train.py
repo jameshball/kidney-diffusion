@@ -14,8 +14,10 @@ from patient_dataset import PatientDataset
 import os
 import pandas as pd
 from glob import glob
+import torchvision.transforms as T
 
 import re
+import gc
 
 
 TEXT_EMBED_DIM = 3
@@ -66,31 +68,32 @@ class FixedNullUnet(NullUnet):
 
 
 def init_imagen(unet_number):
-    # imagen = Imagen(
-    #    unets=(
-    #        unet_generator(1) if unet_number == 1 else FixedNullUnet(),
-    #        unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-    #        unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
-    #    ),
-    #    image_sizes=(64, 256, 1024),
-    #    timesteps=1000,
-    #    text_embed_dim=TEXT_EMBED_DIM,
-    #    random_crop_sizes=(None, None, 256),
-    #).cuda()
-
-    imagen = ElucidatedImagen(
+    imagen = Imagen(
         unets=(
             unet_generator(1) if unet_number == 1 else FixedNullUnet(),
             unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
-        image_sizes=(64, 256),
-        cond_drop_prob=0.1,
-        num_sample_steps=(32, 128),
-        text_embed_dim=TEXT_EMBED_DIM,
-        random_crop_sizes=(None, None),
-        sigma_min=0.002,           # min noise level
-        sigma_max=(80, 320), # max noise level, @crowsonkb recommends double the max noise level for upsampler
+        image_sizes=(64, 256, 1024),
+        timesteps=1000,
+        #text_embed_dim=TEXT_EMBED_DIM,
+        random_crop_sizes=(None, None, 256),
+        condition_on_text=False,
     ).cuda()
+
+    #imagen = ElucidatedImagen(
+    #    unets=(
+    #        unet_generator(1) if unet_number == 1 else FixedNullUnet(),
+    #        unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+    #    ),
+    #    image_sizes=(64, 256),
+    #    cond_drop_prob=0.1,
+    #    num_sample_steps=(32, 128),
+    #    text_embed_dim=TEXT_EMBED_DIM,
+    #    random_crop_sizes=(None, None),
+    #    sigma_min=0.002,           # min noise level
+    #    sigma_max=(80, 320), # max noise level, @crowsonkb recommends double the max noise level for upsampler
+    #).cuda()
 
     return imagen
 
@@ -127,7 +130,7 @@ def main():
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
     imagen = init_imagen(args.unet_number)
-    trainer = ImagenTrainer(imagen=imagen, dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),)
+    trainer = ImagenTrainer(imagen=imagen, dl_tuple_output_keywords_names=('images', 'cond_images'),)
 
     trainer.add_train_dataset(dataset, batch_size=16)
     trainer.add_valid_dataset(valid_dataset, batch_size=16)
@@ -138,6 +141,9 @@ def main():
         checkpoint_path = args.unet2_checkpoint
 
     trainer.load(checkpoint_path, noop_if_not_exist=True)
+    if args.log_to_wandb:
+        import wandb
+        wandb.init(project=f"training_unet{args.unet_number}")
 
     for i in range(200000):
         loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
@@ -146,6 +152,9 @@ def main():
         if not (i % 50):
             valid_loss = trainer.valid_step(unet_number=args.unet_number, max_batch_size=4)
             print(f'step {trainer.num_steps_taken(args.unet_number)}: unet{args.unet_number} validation loss: {valid_loss}')
+            if args.log_to_wandb:
+                wandb.log({"loss": loss})
+                wandb.log({"valid_loss": valid_loss})
 
         if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
             images = trainer.sample(
@@ -158,6 +167,8 @@ def main():
             )
             for index in range(len(images)):
                 images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
+                if args.log_to_wandb:
+                    wandb.log({"sample" : wandb.Image(images[index])})
             trainer.save(checkpoint_path)
 
 
@@ -168,6 +179,7 @@ def parse_args():
     parser.add_argument('--unet_number', type=int, choices=range(1, 3), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
+    parser.add_argument('--log_to_wandb', action='store_true', help='Log loss and samples to weights & biases')
     return parser.parse_args()
 
 
