@@ -157,18 +157,20 @@ def main():
                 wandb.log({"valid_loss": valid_loss})
 
         if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
+            lowres_image, labelmap = dataset[0]
+            rand_image, rand_labelmap = dataset[np.random.randint(len(dataset))]
             images = trainer.sample(
-                batch_size=1,
+                batch_size=2,
                 return_pil_images=True,
-                start_image_or_video=lowres_image.unsqueeze(0),
+                start_image_or_video=torch.stack([lowres_image, rand_image]),
                 start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
-                cond_images=default_labelmap.unsqueeze(0),
+                cond_images=torch.stack([labelmap, rand_labelmap]),
             )
             for index in range(len(images)):
                 images[index].save(f'samples/{run_name}/sample-{i}-{run_name}.png')
                 if args.log_to_wandb:
-                    wandb.log({"sample" : wandb.Image(images[index])})
+                     wandb.log({f"sample{'' if index == 0 else f'-{index}'}": wandb.Image(images[index])})
             trainer.save(checkpoint_path)
 
 
