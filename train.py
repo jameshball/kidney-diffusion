@@ -145,16 +145,6 @@ def main():
     else:
         print('Using UNANNOTATED dataset for initial training')
 
-    for i in range(10):
-        patch, conds, labelmap = dataset[i]
-        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        for j in range(labelmap.shape[0]):
-            data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
-            plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
-        plt.show()
-
-    lowres_image, _, default_labelmap = dataset[0]
-
     run_name = uuid4()
 
     try:
@@ -166,6 +156,14 @@ def main():
     indices = list(range(len(dataset)))
     train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
     valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
+
+    for i in range(10):
+        patch, conds, labelmap = train_dataset[i]
+        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
+        for j in range(labelmap.shape[0]):
+            data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
+            plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
+        plt.show()
 
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
@@ -204,20 +202,21 @@ def main():
                 wandb.log({"valid_loss": valid_loss})
 
         if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
-            conds = torch.tensor([0.0, 0.5, 0.2]).reshape(1, 1, 3).float().cuda()
+            lowres_image, conds, labelmap = dataset[0]
+            rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
             images = trainer.sample(
-                batch_size=1,
+                batch_size=2,
                 return_pil_images=False,
-                text_embeds=conds,
-                start_image_or_video=lowres_image.unsqueeze(0),
+                text_embeds=torch.stack([conds, rand_conds]),
+                start_image_or_video=torch.stack([lowres_image, rand_image]),
                 start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,
-                cond_images=default_labelmap.unsqueeze(0),
+                cond_images=torch.stack([labelmap, rand_labelmap]),
             )
             for index in range(len(images)):
-                T.ToPILImage()(images[index]).save(f'samples/{run_name}/sample-{i}-{run_name}.png')
+                T.ToPILImage()(images[index]).save(f'samples/{run_name}/sample-{i}-{run_name}-{index}.png')
                 if args.log_to_wandb:
-                    wandb.log({"sample" : wandb.Image(images[index])})
+                    wandb.log({f"sample{'' if index == 0 else f'-{index}'}": wandb.Image(images[index])})
 
             trainer.save(checkpoint_path)
 
