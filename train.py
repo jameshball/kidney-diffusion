@@ -20,7 +20,7 @@ import re
 import gc
 
 
-TEXT_EMBED_DIM = 3
+TEXT_EMBED_DIM = 2
 SPLIT_VALID_FRACTION = 0.025
 
 
@@ -72,13 +72,12 @@ def init_imagen(unet_number):
         unets=(
             unet_generator(1) if unet_number == 1 else FixedNullUnet(),
             unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
-        image_sizes=(64, 256, 1024),
+        image_sizes=(64, 256),
         timesteps=1000,
-        #text_embed_dim=TEXT_EMBED_DIM,
-        random_crop_sizes=(None, None, 256),
-        condition_on_text=False,
+        text_embed_dim=TEXT_EMBED_DIM,
+        random_crop_sizes=(None, None),
+        #condition_on_text=False,
     ).cuda()
 
     #imagen = ElucidatedImagen(
@@ -106,14 +105,14 @@ def main():
     print(f'Found {len(dataset) // 32} patches')
 
     for i in [1, 11]:
-        patch, labelmap = dataset[i]
+        patch, conds, labelmap = dataset[i]
         plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
         for j in range(labelmap.shape[0]):
             data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
             plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
         plt.show()
 
-    lowres_image, default_labelmap = dataset[11]
+    lowres_image, default_conds, default_labelmap, = dataset[11]
 
     run_name = uuid4()
 
@@ -130,7 +129,7 @@ def main():
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
     imagen = init_imagen(args.unet_number)
-    trainer = ImagenTrainer(imagen=imagen, dl_tuple_output_keywords_names=('images', 'cond_images'),)
+    trainer = ImagenTrainer(imagen=imagen, dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),)
 
     trainer.add_train_dataset(dataset, batch_size=16)
     trainer.add_valid_dataset(valid_dataset, batch_size=16)
@@ -157,11 +156,12 @@ def main():
                 wandb.log({"valid_loss": valid_loss})
 
         if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
-            lowres_image, labelmap = dataset[0]
-            rand_image, rand_labelmap = dataset[np.random.randint(len(dataset))]
+            lowres_image, conds, labelmap = dataset[0]
+            rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
             images = trainer.sample(
                 batch_size=2,
                 return_pil_images=True,
+                text_embeds=torch.stack([conds,rand_conds]),
                 start_image_or_video=torch.stack([lowres_image, rand_image]),
                 start_at_unet_number=args.unet_number,
                 stop_at_unet_number=args.unet_number,

@@ -10,6 +10,14 @@ import torchvision.transforms as T
 
 NUM_FLIPS_ROTATIONS = 8
 NUM_RANDOMCROPS =  4
+TYPE = ['Breast', 'Kidney', 'Liver', 'Prostate', 'Bladder', 'Colon', 'Stomach']
+DISEASES = ['Breast invasive carcinoma', 'Kidney renal clear cell carcinoma', 'Kidney renal papillary cell carcinoma', 'Lung squamous cell carcinoma','Lung adenocarcinoma', 'Prostate adenocarcinoma', 'Bladder Urothelial Carcinoma', 'Colon adenocarcinoma', 'Stomach adenocarcinoma']
+
+def normalise_type(x):
+    return TYPE.index(x) / len(TYPE)
+
+def normalise_diseases(x):
+    return DISEASES.index(x) / len(DISEASES)
 
 class PatientDataset(Dataset):
     def __init__(self, data_path, patch_size=256, image_size=64):
@@ -26,7 +34,14 @@ class PatientDataset(Dataset):
             if file.endswith('.npy'):
                 self.slide_ids.append(file)  
         self.num_patches=len(self.slide_ids)
-        print(self.num_patches)
+       
+        #Now load in the patient information: 
+        patient_data = pd.read_csv(data_path+'/Supplementary/supplementary.csv', delimiter=';')
+        patient_data['Type'] = patient_data['Type'].apply(normalise_type)
+        patient_data['Disease'] = patient_data['Disease'].apply(normalise_diseases)
+        self.patient_data = patient_data
+        print(self.patient_data['Type'])
+        
 
     def __len__(self):
         return NUM_FLIPS_ROTATIONS * NUM_RANDOMCROPS * self.num_patches
@@ -48,22 +63,26 @@ class PatientDataset(Dataset):
         pos = np.random.uniform(size=2)*(img_size-self.patch_size)
         patch = T.functional.crop(patch,int(pos[0]),int(pos[1]),self.patch_size,self.patch_size)
         labelmap = T.functional.crop(labelmap,int(pos[0]),int(pos[1]),self.patch_size,self.patch_size)
+        
+        typ = self.patient_data['Type'].iloc[patch_index]
+        disease = self.patient_data['Disease'].iloc[patch_index]
+        conds = torch.Tensor([typ,disease]).reshape(1,2).float().cuda()
 
         # Rotate and flip the patch
         if index % NUM_FLIPS_ROTATIONS == 0:
-            return patch, labelmap
+            return patch, conds, labelmap
         elif index % NUM_FLIPS_ROTATIONS == 1:
-            return patch.flip(2), labelmap.flip(2)
+            return patch.flip(2), conds, labelmap.flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 2:
-            return patch.flip(1), labelmap.flip(1)
+            return patch.flip(1), conds, labelmap.flip(1)
         elif index % NUM_FLIPS_ROTATIONS == 3:
-            return patch.flip(1).flip(2), labelmap.flip(1).flip(2)
+            return patch.flip(1).flip(2), conds, labelmap.flip(1).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 4:
-            return patch.transpose(1, 2), labelmap.transpose(1, 2)
+            return patch.transpose(1, 2), conds, labelmap.transpose(1, 2)
         elif index % NUM_FLIPS_ROTATIONS == 5:
-            return patch.transpose(1, 2).flip(2), labelmap.transpose(1, 2).flip(2)
+            return patch.transpose(1, 2).flip(2), conds, labelmap.transpose(1, 2).flip(2)
         elif index % NUM_FLIPS_ROTATIONS == 6:
-            return patch.transpose(1, 2).flip(1), labelmap.transpose(1, 2).flip(1)
+            return patch.transpose(1, 2).flip(1), conds, labelmap.transpose(1, 2).flip(1)
         else:
-            return patch.transpose(1, 2).flip(1).flip(2), labelmap.transpose(1, 2).flip(1).flip(2)
+            return patch.transpose(1, 2).flip(1).flip(2), conds, labelmap.transpose(1, 2).flip(1).flip(2)
 
