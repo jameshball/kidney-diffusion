@@ -7,6 +7,7 @@ from tqdm import tqdm
 from skimage import color
 import numpy as np
 import torchvision.transforms as T
+from pathlib import Path
 
 NUM_FLIPS_ROTATIONS = 8
 NUM_RANDOMCROPS =  4
@@ -27,20 +28,18 @@ class PatientDataset(Dataset):
         self.image_size = image_size
 
         self.data_path = data_path
-
-        # Iterate directory
-        self.slide_ids = []
-        for file in os.listdir(data_path+'/Patches'):
-            if file.endswith('.npy'):
-                self.slide_ids.append(file)  
-        self.num_patches=len(self.slide_ids)
        
         #Now load in the patient information: 
         patient_data = pd.read_csv(data_path+'/Supplementary/supplementary.csv', delimiter=';')
+        self.num_patches=len(patient_data['ID'])
+        #Check that all patches are actually found: 
+        for id in patient_data['ID']:
+            if not Path(self.data_path+'/Patches/'+id[:-1]+'.npy').is_file(): print('Patch '+id+' missing')
+            if not Path(self.data_path+'/Labels/'+id+'binary_mask.npy').is_file(): print('Label '+id+' missing')
         patient_data['Type'] = patient_data['Type'].apply(normalise_type)
         patient_data['Disease'] = patient_data['Disease'].apply(normalise_diseases)
         self.patient_data = patient_data
-        print(self.patient_data['Type'])
+        print(self.num_patches)
         
 
     def __len__(self):
@@ -50,9 +49,9 @@ class PatientDataset(Dataset):
     
         index = original_index
         patch_index= original_index // (NUM_FLIPS_ROTATIONS * NUM_RANDOMCROPS)      
-        labelmap = np.load(self.data_path+'/Labels/'+self.slide_ids[patch_index][:-4]+'1binary_mask.npy')
+        labelmap = np.load(self.data_path+'/Labels/'+self.patient_data['ID'].iloc[patch_index]+'binary_mask.npy')
         labelmap = labelmap.reshape((np.shape(labelmap)[0],np.shape(labelmap)[1],1)) #This is actually only necessary if we were to use multiple labels, but keep if for simplicity
-        patch = np.load(self.data_path+'/Patches/'+self.slide_ids[patch_index])
+        patch = np.load(self.data_path+'/Patches/'+self.patient_data['ID'].iloc[patch_index][:-1]+'.npy')
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
