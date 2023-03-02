@@ -76,7 +76,8 @@ def main():
         deep_labelmap = np.zeros((len(set(labels.values())), 1024, 1024))
 
         for label in set(labels.values()):
-            deep_labelmap[label - 1, labelmap == label] = 1
+            if not args.only_glom_tubules or label == labels['Tubuli'] or label == labels['Glomerui']:
+                deep_labelmap[label - 1, labelmap == label] = 1
 
         plt.imshow(labelmap)
         plt.savefig(f"labelmap_{i}.png")
@@ -85,7 +86,10 @@ def main():
         medres_images = generate_images(2, args, deep_labelmap, 3, lowres_images=lowres_images)
         highres_images = generate_images(3, args, deep_labelmap, 3, lowres_images=medres_images)
         for j, image in enumerate(highres_images):
-            image.save(f'samples/inference-label-index{i}-gen-{j}.png')
+            if args.only_glom_tubules:
+                image.save(f'samples/inference-glom-tubules-label-index{i}-gen-{j}.png')
+            else:
+                image.save(f'samples/inference-label-index{i}-gen-{j}.png')
 
 
 def parse_args():
@@ -95,6 +99,7 @@ def parse_args():
     parser.add_argument('--unet3_checkpoint', type=str, default='./unet3_checkpoint.pt', help='Path to checkpoint for unet3 model')
     parser.add_argument('--start_index', type=int, default=0, help='Start index for segmentation mask')
     parser.add_argument('--end_index', type=int, default=0, help='End index for segmentation mask')
+    parser.add_argument('--only_glom_tubules', action='store_true')
     return parser.parse_args()
 
 
