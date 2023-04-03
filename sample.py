@@ -35,6 +35,7 @@ def generate_images(unet_number, args, lowres_images=None):
         batch_size=args.num_images,
         return_pil_images=(unet_number==3),
         text_embeds=conds,
+        cond_images=torch.zeros((args.num_images, 4, 1024, 1024)).cuda(),
         start_image_or_video=lowres_images,
         start_at_unet_number=unet_number,
         stop_at_unet_number=unet_number,
