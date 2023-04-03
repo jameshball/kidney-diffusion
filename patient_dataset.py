@@ -30,7 +30,7 @@ def normalize_creatinine(x):
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False):
         super().__init__()
 
         self.annotated_dataset = annotated_dataset
@@ -63,9 +63,12 @@ class PatientDataset(Dataset):
                 self.test_h5_ids.append(x)
             else:
                 self.train_h5_ids.append(x)
-        print(f"Test slide names: {test_slides}")
-        print(f"{len(self.train_h5_ids)} annotated patches in train set.")
-        print(f"{len(self.test_h5_ids)} annotated patches in test set.")
+
+
+        if verbose:
+            print(f"Test slide names: {test_slides}")
+            print(f"{len(self.train_h5_ids)} annotated patches in train set.")
+            print(f"{len(self.test_h5_ids)} annotated patches in test set.")
         
         # Normalise the patient outcomes
         patient_outcomes["final_outcome"] = patient_outcomes["final_outcome"].apply(normalize_patient_outcomes)
@@ -80,7 +83,7 @@ class PatientDataset(Dataset):
 
         self.creatinine_avg = {}
         # Average the creatinine levels between the transplant and biopsy
-        for patient_id, creatinine in tqdm(patient_creatinine.items(), desc="Normalising data"):
+        for patient_id, creatinine in (tqdm(patient_creatinine.items(), desc="Normalising data") if verbose else patient_creatinine.items()):
             # Normalise the creatinine values
             creatinine["creatinine"] = creatinine["Value"].apply(normalize_creatinine)
 
@@ -109,7 +112,7 @@ class PatientDataset(Dataset):
         self.num_train_patches = 0
         self.num_test_patches = 0
         self.slide_name_to_index = {}
-        for index, slide_id in enumerate(tqdm(slide_ids, desc="Processing slides")):
+        for index, slide_id in enumerate(tqdm(slide_ids, desc="Processing slides") if verbose else slide_ids):
             slide = slideio.open_slide(self.svs_dir + slide_id + ".svs", "SVS")
             metadata = slide.raw_metadata.split("|")
             for prop in metadata:
@@ -149,10 +152,11 @@ class PatientDataset(Dataset):
                 self.train_patch_positions.append(patch_positions)
                 self.num_train_patches += len(patch_positions)
 
-        print(f"{self.num_test_patches} patches in unannotated test set.")
-        print(f"{self.num_train_patches} patches in unannotated train set.")
-        print(f"Test slide ids: {self.test_slide_ids}")
-        print(self.slide_name_to_index)
+        if verbose:
+            print(f"{self.num_test_patches} patches in unannotated test set.")
+            print(f"{self.num_train_patches} patches in unannotated train set.")
+            print(f"Test slide ids: {self.test_slide_ids}")
+            print(self.slide_name_to_index)
 
 
     def __len__(self):
@@ -207,9 +211,9 @@ class PatientDataset(Dataset):
             patch = slide.read_block((x, y, self.patch_size, self.patch_size), size=(self.image_size, self.image_size))
 
         # Convert the patch to a tensor
-        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float().cuda()
+        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
 
-        labelmap = torch.from_numpy(labelmap).permute((2, 0, 1)).float().cuda()
+        labelmap = torch.from_numpy(labelmap).permute((2, 0, 1)).float()
 
         if slide_index == -1:
             # arbitrary defaults
@@ -229,7 +233,7 @@ class PatientDataset(Dataset):
                 avg_creatinine = 0.2
 
         # Convert conditions to tensor
-        conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float().cuda()
+        conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float()
 
         # Rotate and flip the patch
         if index % NUM_FLIPS_ROTATIONS == 0:

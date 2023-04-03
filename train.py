@@ -15,6 +15,7 @@ from patient_dataset import PatientDataset
 import os
 import pandas as pd
 from glob import glob
+import wandb
 
 import re
 import gc
@@ -110,9 +111,21 @@ def init_imagen(unet_number):
 
     return imagen
 
+def log_wandb(cur_step, loss, validation=False):
+    wandb.log({
+        "loss" if not validation else "val_loss" : loss,
+        "step": cur_step,
+    })
 
 def main():
     args = parse_args()
+    
+    imagen = init_imagen(args.unet_number)
+    trainer = ImagenTrainer(
+        imagen=imagen,
+        dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),
+        fp16=True,
+    )
 
     # Load the patient outcomes
     patient_outcomes = pd.read_excel(f'{args.data_path}/outcomes.xlsx', 'Sheet1')
@@ -133,7 +146,7 @@ def main():
     # Filter any creatinine files that don't have an outcome
     patient_creatinine = {k: v for k, v in patient_creatinine.items() if k in patient_outcomes['patient_UUID'].values}
 
-    print(f'Found {len(patient_outcomes)} patients with SVS files')
+    trainer.accelerator.print(f'Found {len(patient_outcomes)} patients with SVS files')
 
     # Load the labelled data from the h5 labelbox download
     patient_labelled_dir = f'{args.data_path}/results.h5'
@@ -141,16 +154,10 @@ def main():
     # Initialise PatientDataset
     dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024, annotated_dataset=args.annotated_dataset)
     if args.annotated_dataset:
-        print('Using ANNOTATED dataset for finetuning')
+        trainer.accelerator.print('Using ANNOTATED dataset for finetuning')
     else:
-        print('Using UNANNOTATED dataset for initial training')
+        trainer.accelerator.print('Using UNANNOTATED dataset for initial training')
 
-    run_name = uuid4()
-
-    try:
-        os.makedirs(f"samples/{run_name}")
-    except FileExistsError:
-        pass
 
     train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
     indices = list(range(len(dataset)))
@@ -165,17 +172,11 @@ def main():
             plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
         plt.show()
 
-    print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
+    trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
-    imagen = init_imagen(args.unet_number)
-    trainer = ImagenTrainer(
-        imagen=imagen,
-        dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),
-        fp16=True,
-    )
 
-    trainer.add_train_dataset(dataset, batch_size=16)
-    trainer.add_valid_dataset(valid_dataset, batch_size=16)
+    trainer.add_train_dataset(dataset, batch_size=8, num_workers=8)
+    trainer.add_valid_dataset(valid_dataset, batch_size=8, num_workers=8)
 
     if args.unet_number == 1:
         checkpoint_path = args.unet1_checkpoint
@@ -186,39 +187,63 @@ def main():
 
     trainer.load(checkpoint_path, noop_if_not_exist=True)
 
-    if args.log_to_wandb:
-        import wandb
-        wandb.init(project=f"training_unet{args.unet_number}")
+    run_id = None
 
-    for i in range(200000):
-        loss = trainer.train_step(unet_number=args.unet_number, max_batch_size=4)
-        print(f'step {trainer.num_steps_taken(args.unet_number)}: unet{args.unet_number} loss: {loss}')
+    if trainer.is_main:
+        run_id = wandb.util.generate_id()
+        if args.run_id is not None:
+            run_id = args.run_id
+        trainer.accelerator.print(f"Run ID: {run_id}")
 
-        if not (i % 50):
-            valid_loss = trainer.valid_step(unet_number=args.unet_number, max_batch_size=4)
-            print(f'step {trainer.num_steps_taken(args.unet_number)}: unet{args.unet_number} validation loss: {valid_loss}')
-            if args.log_to_wandb:
-                wandb.log({"loss": loss})
-                wandb.log({"valid_loss": valid_loss})
+        try:
+            os.makedirs(f"samples/{run_id}")
+        except FileExistsError:
+            pass
 
-        if not (i % args.sample_freq) and trainer.is_main:  # is_main makes sure this can run in distributed
-            lowres_image, conds, labelmap = dataset[0]
-            rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
-            images = trainer.sample(
-                batch_size=2,
-                return_pil_images=False,
-                text_embeds=torch.stack([conds, rand_conds]),
-                start_image_or_video=torch.stack([lowres_image, rand_image]),
-                start_at_unet_number=args.unet_number,
-                stop_at_unet_number=args.unet_number,
-                cond_images=torch.stack([labelmap, rand_labelmap]),
-            )
-            for index in range(len(images)):
-                T.ToPILImage()(images[index]).save(f'samples/{run_name}/sample-{i}-{run_name}-{index}.png')
-                if args.log_to_wandb:
+        wandb.init(project=f"training_unet{args.unet_number}", resume=args.resume, id=run_id)
+
+    trainer.accelerator.wait_for_everyone()
+    while True:
+        step_num = trainer.num_steps_taken(args.unet_number)
+        loss = trainer.train_step(unet_number=args.unet_number)
+        trainer.accelerator.print(f'step {step_num}: unet{args.unet_number} loss: {loss}')
+
+        if trainer.is_main:
+            log_wandb(step_num, loss)
+
+        if not (step_num % 50):
+            valid_loss = trainer.valid_step(unet_number=args.unet_number)
+            trainer.accelerator.print(f'step {step_num}: unet{args.unet_number} validation loss: {valid_loss}')
+            if trainer.is_main:
+                log_wandb(step_num, loss, validation=True)
+
+        if not (step_num % args.sample_freq):
+            trainer.accelerator.wait_for_everyone()
+            trainer.accelerator.print()
+            trainer.accelerator.print("Saving model and sampling")
+
+            if trainer.is_main:
+                lowres_image, conds, labelmap = dataset[0]
+                rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
+
+                with torch.no_grad():
+                    images = trainer.sample(
+                        batch_size=2,
+                        return_pil_images=False,
+                        text_embeds=torch.stack([conds, rand_conds]),
+                        start_image_or_video=torch.stack([lowres_image, rand_image]),
+                        start_at_unet_number=args.unet_number,
+                        stop_at_unet_number=args.unet_number,
+                        cond_images=torch.stack([labelmap, rand_labelmap]),
+                    )
+
+                for index in range(len(images)):
+                    T.ToPILImage()(images[index]).save(f'samples/{run_id}/sample-{step_num}-{run_id}-{index}.png')
                     wandb.log({f"sample{'' if index == 0 else f'-{index}'}": wandb.Image(images[index])})
-
+    
+            trainer.accelerator.wait_for_everyone()
             trainer.save(checkpoint_path)
+            trainer.accelerator.print("Finished sampling and saving model!")
 
 
 def parse_args():
@@ -230,9 +255,11 @@ def parse_args():
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
     parser.add_argument('--annotated_dataset', action='store_true', help='Train with an annotated dataset')
-    parser.add_argument('--log_to_wandb', action='store_true', help='Log loss and samples to weights & biases')
+    parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
+    parser.add_argument("--run_id", type=str, default=None)
     return parser.parse_args()
 
 
 if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('spawn')
     main()
