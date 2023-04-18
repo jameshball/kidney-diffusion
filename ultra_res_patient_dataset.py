@@ -16,10 +16,13 @@ MAG_LEVEL_SIZES = [40000, 6500, 1024]
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, verbose=False):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, magnification_level, verbose=False):
         super().__init__()
 
         self.patch_size = 1024
+        self.magnification_level = magnification_level
+        self.h5_path = h5_path
+        self.labels = {'Tubuli': 1, 'Vein': 2, 'Vessel_indeterminate': 2, 'Artery': 3, 'Glomerui': 4}
 
         # Add the annotated data from the h5file:
         h5_ids = []
@@ -138,10 +141,22 @@ class PatientDataset(Dataset):
         x = center_x - zoomed_size // 2
         y = center_y - zoomed_size // 2
 
-        patch = slide.read_block((x, y, zoomed_size, zoomed_size), size=(self.patch_size, self.patch_size))
+        patch = np.full((zoomed_size, zoomed_size, 3), (242, 243, 242))
+
+        cropped_x = 0 if x < 0 else x
+        cropped_width = zoomed_size + 2 * x if x < 0 else zoomed_size
+
+        cropped_y = 0 if y < 0 else y
+        cropped_height = zoomed_size + 2 * y if y < 0 else zoomed_size
+
+        print(index, width, height, center_x, center_y, x, y, zoomed_size, cropped_x, cropped_y, cropped_width, cropped_height)
+        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(self.patch_size, self.patch_size))
+
+        # need to change the size of the patch being read according to the aspect ratio of the new cropped width and height
+        # to make sure that the image doesn't get stretched.
 
         # Replace any black pixels with the default background colour for slide image
-        patch[np.all(image == [0, 0, 0], axis=-1)] = [242, 243, 242]
+        patch[np.all(patch == [0, 0, 0], axis=-1)] = [242, 243, 242]
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
@@ -175,7 +190,7 @@ class PatientDataset(Dataset):
         zoomed_patch = slide.read_block((zoomed_x, zoomed_y, zoomed_size, zoomed_size), size=(self.patch_size, self.patch_size))
 
         # Replace any black pixels with the default background colour for slide image
-        zoomed_patch[np.all(image == [0, 0, 0], axis=-1)] = [242, 243, 242]
+        zoomed_patch[np.all(zoomed_patch == [0, 0, 0], axis=-1)] = [242, 243, 242]
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()

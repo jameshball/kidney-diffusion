@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.data import Subset, DataLoader
 import torchvision.transforms as T
 
-from patient_dataset import PatientDataset
+from ultra_res_patient_dataset import PatientDataset
 import os
 import pandas as pd
 from glob import glob
@@ -24,7 +24,7 @@ import gc
 SPLIT_VALID_FRACTION = 0.025
 
 
-def unet_generator(ultra_res_stage, unet_number):
+def unet_generator(magnification_level, unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
@@ -32,7 +32,7 @@ def unet_generator(ultra_res_stage, unet_number):
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
-            cond_images_channels=3 if ultra_res_stage > 1 else 0,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     if unet_number == 2:
@@ -44,7 +44,7 @@ def unet_generator(ultra_res_stage, unet_number):
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if ultra_res_stage > 1 else 0,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
     
     if unet_number == 3:
@@ -56,7 +56,7 @@ def unet_generator(ultra_res_stage, unet_number):
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if ultra_res_stage > 1 else 0,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     return None
@@ -75,12 +75,12 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-def init_imagen(ultra_res_stage, unet_number):
+def init_imagen(magnification_level, unet_number):
     imagen = Imagen(
         unets=(
-            unet_generator(ultra_res_stage, 1) if unet_number == 1 else FixedNullUnet(),
-            unet_generator(ultra_res_stage, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-            unet_generator(ultra_res_stage, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+            unet_generator(magnification_level, 1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(magnification_level, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(magnification_level, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
@@ -99,8 +99,8 @@ def log_wandb(cur_step, loss, validation=False):
 def main():
     args = parse_args()
     
-    imagen = init_imagen(args.ultra_res_stage, args.unet_number)
-    dl_keywords = ('images') if args.ultra_res_stage == 1 else ('images', 'cond_images')
+    imagen = init_imagen(args.magnification_level, args.unet_number)
+    dl_keywords = ('images',) if args.magnification_level == 0 else ('images', 'cond_images')
     trainer = ImagenTrainer(
         imagen=imagen,
         dl_tuple_output_keywords_names=dl_keywords,
@@ -132,11 +132,8 @@ def main():
     patient_labelled_dir = f'{args.data_path}/results.h5'
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024, annotated_dataset=args.annotated_dataset)
-    if args.annotated_dataset:
-        trainer.accelerator.print('Using ANNOTATED dataset for finetuning')
-    else:
-        trainer.accelerator.print('Using UNANNOTATED dataset for initial training')
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level)
+    trainer.accelerator.print('Using UNANNOTATED dataset for magnification level ' + str(args.magnification_level))
 
 
     train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
@@ -145,11 +142,12 @@ def main():
     valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
 
     for i in range(10):
-        patch, conds, labelmap = train_dataset[i]
+        if args.magnification_level == 0:
+            patch = train_dataset[i]
+        else:
+            patch, zoomed_patch = train_dataset[i]
+
         plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        for j in range(labelmap.shape[0]):
-            data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
-            plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
         plt.show()
 
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
@@ -234,10 +232,10 @@ def parse_args():
     parser.add_argument('--unet_number', type=int, choices=range(1, 4), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
-    parser.add_argument('--annotated_dataset', action='store_true', help='Train with an annotated dataset')
     parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--magnification_level", type=int, choices=range(0, 3))
     return parser.parse_args()
 
 
