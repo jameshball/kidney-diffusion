@@ -3,6 +3,7 @@
 /mnist
 /.idea
 /samples
+/wandb
 
 *.pt
 
