@@ -21,47 +21,42 @@ import re
 import gc
 
 
-TEXT_EMBED_DIM = 3
 SPLIT_VALID_FRACTION = 0.025
 
 
-def unet_generator(unet_number):
+def unet_generator(ultra_res_stage, unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
             dim_mults=(1, 2, 3, 4),
-            cond_dim=512,
-            text_embed_dim=3,
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
-            cond_images_channels=4,
+            cond_images_channels=3 if ultra_res_stage > 1 else 0,
         )
 
     if unet_number == 2:
         return Unet(
             dim=128,
-            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
             num_resnet_blocks=2,
             memory_efficient=True,
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=4,
+            cond_images_channels=3 if ultra_res_stage > 1 else 0,
         )
     
     if unet_number == 3:
         return Unet(
             dim=128,
-            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
-            num_resnet_blocks=(2, 4, 4, 4),
+            num_resnet_blocks=(2, 4, 6, 8),
             memory_efficient=True,
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=4,
+            cond_images_channels=3 if ultra_res_stage > 1 else 0,
         )
 
     return None
@@ -80,34 +75,18 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-def init_imagen(unet_number):
+def init_imagen(ultra_res_stage, unet_number):
     imagen = Imagen(
         unets=(
-            unet_generator(1) if unet_number == 1 else FixedNullUnet(),
-            unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+            unet_generator(ultra_res_stage, 1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(ultra_res_stage, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(ultra_res_stage, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
         pred_objectives=("noise", "v", "v"),
-        text_embed_dim=TEXT_EMBED_DIM,
         random_crop_sizes=(None, None, 256),
     ).cuda()
-
-    #imagen = ElucidatedImagen(
-    #    unets=(
-    #        unet_generator(1) if unet_number == 1 else FixedNullUnet(),
-    #        unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-    #        unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
-    #    ),
-    #    image_sizes=(64, 256, 1024),
-    #    cond_drop_prob=0.1,
-    #    num_sample_steps=(32, 128, 128),
-    #    text_embed_dim=TEXT_EMBED_DIM,
-    #    random_crop_sizes=(None, None, 256),
-    #    sigma_min=0.002,           # min noise level
-    #    sigma_max=(80, 320, 1280), # max noise level, @crowsonkb recommends double the max noise level for upsampler
-    #).cuda()
 
     return imagen
 
@@ -120,10 +99,11 @@ def log_wandb(cur_step, loss, validation=False):
 def main():
     args = parse_args()
     
-    imagen = init_imagen(args.unet_number)
+    imagen = init_imagen(args.ultra_res_stage, args.unet_number)
+    dl_keywords = ('images') if args.ultra_res_stage == 1 else ('images', 'cond_images')
     trainer = ImagenTrainer(
         imagen=imagen,
-        dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),
+        dl_tuple_output_keywords_names=dl_keywords,
         fp16=True,
     )
 
