@@ -1,5 +1,6 @@
 from collections import Counter
 
+import time
 import h5py
 import pandas as pd
 import torch
@@ -12,7 +13,7 @@ import numpy as np
 
 NUM_FLIPS_ROTATIONS = 8
 NUM_TRANSLATIONS =  4
-MAG_LEVEL_SIZES = [40000, 6500, 1024]
+MAG_LEVEL_SIZES = [4000, 6500, 1024]
 
 
 class PatientDataset(Dataset):
@@ -141,7 +142,7 @@ class PatientDataset(Dataset):
         x = center_x - zoomed_size // 2
         y = center_y - zoomed_size // 2
 
-        patch = np.full((zoomed_size, zoomed_size, 3), (242, 243, 242))
+        patch = np.full((self.patch_size, self.patch_size, 3), (242, 243, 242))
 
         cropped_x = 0 if x < 0 else x
         cropped_width = zoomed_size + 2 * x if x < 0 else zoomed_size
@@ -149,8 +150,9 @@ class PatientDataset(Dataset):
         cropped_y = 0 if y < 0 else y
         cropped_height = zoomed_size + 2 * y if y < 0 else zoomed_size
 
-        print(index, width, height, center_x, center_y, x, y, zoomed_size, cropped_x, cropped_y, cropped_width, cropped_height)
-        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(self.patch_size, self.patch_size))
+        print(slide_index, index, width, height, cropped_x, cropped_y, cropped_width, cropped_height)
+        print(0 <= cropped_x, 0 <= cropped_width, cropped_x + cropped_width <= width, 0 <= cropped_y, 0 <= cropped_height, cropped_y + cropped_height <= height)
+        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(self.patch_size, self.patch_size // 2))
 
         # need to change the size of the patch being read according to the aspect ratio of the new cropped width and height
         # to make sure that the image doesn't get stretched.
