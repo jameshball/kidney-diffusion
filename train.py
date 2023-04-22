@@ -175,7 +175,7 @@ def main():
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
 
-    trainer.add_train_dataset(dataset, batch_size=8, num_workers=args.num_workers)
+    trainer.add_train_dataset(train_dataset, batch_size=8, num_workers=args.num_workers)
     trainer.add_valid_dataset(valid_dataset, batch_size=8, num_workers=args.num_workers)
 
     if args.unet_number == 1:

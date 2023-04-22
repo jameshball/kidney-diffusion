@@ -67,19 +67,10 @@ def main():
     train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
     valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
 
-    for i in range(10):
-        if args.magnification_level == 0:
-            patch = train_dataset[i]
-        else:
-            patch, zoomed_patch = train_dataset[i]
-
-        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        plt.show()
-
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
 
-    train_dl = DataLoader(dataset, batch_size=8, num_workers=args.num_workers)
+    train_dl = DataLoader(train_dataset, batch_size=8, num_workers=args.num_workers)
     valid_dl = DataLoader(valid_dataset, batch_size=8, num_workers=args.num_workers)
 
     for data in train_dl:

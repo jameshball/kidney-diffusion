@@ -13,7 +13,7 @@ import numpy as np
 
 NUM_FLIPS_ROTATIONS = 8
 NUM_TRANSLATIONS =  4
-MAG_LEVEL_SIZES = [4000, 6500, 1024]
+MAG_LEVEL_SIZES = [40000, 6500, 1024]
 
 
 class PatientDataset(Dataset):
@@ -118,7 +118,7 @@ class PatientDataset(Dataset):
 
     def __len__(self):
         if self.magnification_level == 0:
-            return NUM_TRANSLATIONS * self.num_train_patches
+            return NUM_FLIPS_ROTATIONS * len(self.train_slide_ids)
         else:
             return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_train_patches
 
@@ -130,9 +130,8 @@ class PatientDataset(Dataset):
             else:
                 index -= len(self.train_patch_positions[i])
 
-
-    def read_block(self, index):
-        slide_index, patch_position = self.index_to_slide(index // NUM_FLIPS_ROTATIONS)
+    def read_block_mag_zero(self, index):
+        slide_index = index // NUM_FLIPS_ROTATIONS
         slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
         width, height = slide.size
 
@@ -150,15 +149,61 @@ class PatientDataset(Dataset):
         cropped_y = 0 if y < 0 else y
         cropped_height = zoomed_size + 2 * y if y < 0 else zoomed_size
 
-        print(slide_index, index, width, height, cropped_x, cropped_y, cropped_width, cropped_height)
-        print(0 <= cropped_x, 0 <= cropped_width, cropped_x + cropped_width <= width, 0 <= cropped_y, 0 <= cropped_height, cropped_y + cropped_height <= height)
-        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(self.patch_size, self.patch_size // 2))
+        patch_width = int(cropped_width * (self.patch_size / zoomed_size))
+        patch_height = int(cropped_height * (self.patch_size / zoomed_size))
 
-        # need to change the size of the patch being read according to the aspect ratio of the new cropped width and height
-        # to make sure that the image doesn't get stretched.
+        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(patch_width, patch_height))
 
-        # Replace any black pixels with the default background colour for slide image
-        patch[np.all(patch == [0, 0, 0], axis=-1)] = [242, 243, 242]
+        x_diff = self.patch_size - patch_width
+        y_diff = self.patch_size - patch_height
+        x_diff //= 2
+        y_diff //= 2
+
+        patch[y_diff:y_diff+patch_height, x_diff:x_diff+patch_width] = cropped_patch
+
+        # Convert the patch to a tensor
+        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
+
+        return patch
+
+
+    # x y is the coordinate of the top-left corner of the patch to read in the overall image
+    # mag_level controls the magnification of the patch
+    def read_block(self, index, mag_level, x, y):
+        slide_index = index // NUM_FLIPS_ROTATIONS
+        slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
+        width, height = slide.size
+
+        image_size = MAG_LEVEL_SIZES[mag_level]
+
+        patch = np.full((self.patch_size, self.patch_size, 3), (242, 243, 242))
+
+        # if coords are negative, cap to 0
+        cropped_x = max(x, 0)
+        cropped_y = max(y, 0)
+
+        # if coords are negative, then the section that is out of bounds
+        # should count towards the image_size so we should trim this off
+        x_trim = max(-x, 0)
+        y_trim = max(-y, 0)
+
+        cropped_width = min(width - cropped_x, image_size - x_trim)
+        cropped_height = min(height - cropped_y, image_size - y_trim)
+
+        patch_width = int(cropped_width * (self.patch_size / image_size))
+        patch_height = int(cropped_height * (self.patch_size / image_size))
+
+        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(patch_width, patch_height))
+
+        # need to assign cropped_patch to the right position in patch according to x, y
+        # the below code is wrong:
+
+        x_diff = self.patch_size - patch_width
+        y_diff = self.patch_size - patch_height
+        x_diff //= 2
+        y_diff //= 2
+
+        patch[y_diff:y_diff+patch_height, x_diff:x_diff+patch_width] = cropped_patch
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
