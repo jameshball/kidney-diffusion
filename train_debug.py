@@ -73,8 +73,19 @@ def main():
     train_dl = DataLoader(train_dataset, batch_size=8, num_workers=args.num_workers)
     valid_dl = DataLoader(valid_dataset, batch_size=8, num_workers=args.num_workers)
 
-    for data in train_dl:
-        pass
+
+    index = 0
+    for patch in train_dataset:
+        print(patch)
+        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
+        plt.savefig(f"test_img{index}.png")
+        plt.show()
+
+        index += 1
+
+        if index > 10:
+            break
+        
 
 
 def parse_args():

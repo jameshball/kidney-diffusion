@@ -141,37 +141,14 @@ class PatientDataset(Dataset):
         x = center_x - zoomed_size // 2
         y = center_y - zoomed_size // 2
 
-        patch = np.full((self.patch_size, self.patch_size, 3), (242, 243, 242))
-
-        cropped_x = 0 if x < 0 else x
-        cropped_width = zoomed_size + 2 * x if x < 0 else zoomed_size
-
-        cropped_y = 0 if y < 0 else y
-        cropped_height = zoomed_size + 2 * y if y < 0 else zoomed_size
-
-        patch_width = int(cropped_width * (self.patch_size / zoomed_size))
-        patch_height = int(cropped_height * (self.patch_size / zoomed_size))
-
-        cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(patch_width, patch_height))
-
-        x_diff = self.patch_size - patch_width
-        y_diff = self.patch_size - patch_height
-        x_diff //= 2
-        y_diff //= 2
-
-        patch[y_diff:y_diff+patch_height, x_diff:x_diff+patch_width] = cropped_patch
-
-        # Convert the patch to a tensor
-        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
-
-        return patch
-
+        return self.read_block(index, 0, x, y, slide=slide)
 
     # x y is the coordinate of the top-left corner of the patch to read in the overall image
     # mag_level controls the magnification of the patch
-    def read_block(self, index, mag_level, x, y):
+    def read_block(self, index, mag_level, x, y, slide=None):
         slide_index = index // NUM_FLIPS_ROTATIONS
-        slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
+        if slide == None:
+            slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
         width, height = slide.size
 
         image_size = MAG_LEVEL_SIZES[mag_level]
@@ -194,19 +171,29 @@ class PatientDataset(Dataset):
         patch_height = int(cropped_height * (self.patch_size / image_size))
 
         cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(patch_width, patch_height))
+        print("cropped_patch", cropped_patch.shape)
 
-        # need to assign cropped_patch to the right position in patch according to x, y
-        # the below code is wrong:
+        # x and y are relative to the actual kidney image, and we need coordinates
+        # relative to the patch we are returning. x and y define the top-left corner
+        # of the patch, which is coordinate [0,0] so by subtracting x and y from a set
+        # of coordinates, it now is relative to the patch. So we subtract x and y from
+        # cropped_x and cropped_y to get the right coordinates.
 
-        x_diff = self.patch_size - patch_width
-        y_diff = self.patch_size - patch_height
-        x_diff //= 2
-        y_diff //= 2
+        patch_x = cropped_x - x
+        patch_y = cropped_y - y
 
-        patch[y_diff:y_diff+patch_height, x_diff:x_diff+patch_width] = cropped_patch
+        # need to multiply by (self.patch_size / image_size) to change coordinates into
+        # the same magnification as the patch, rather than the whole slide.
+        patch_x = int(patch_x * (self.patch_size / image_size))
+        patch_y = int(patch_y * (self.patch_size / image_size))
+
+        print(x, y, cropped_x, cropped_y, width, height, patch_width, patch_height, patch_x, patch_y)
+        patch[patch_y:patch_y+patch_height, patch_x:patch_x+patch_width] = cropped_patch
+        print("assignment", patch.shape)
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
+        print("torch", patch.shape)
 
         return patch
 
@@ -268,7 +255,10 @@ class PatientDataset(Dataset):
             else:
                 return patch.transpose(1, 2).flip(1).flip(2), zoomed_patch.transpose(1, 2).flip(1).flip(2)
         else:
-            patch = self.read_block(index)
+            patch = self.read_block_mag_zero(index)
+            print(type(patch))
+            print(patch.shape)
+            print(index % NUM_FLIPS_ROTATIONS)
 
             # Rotate and flip the patch
             if index % NUM_FLIPS_ROTATIONS == 0:
@@ -287,5 +277,4 @@ class PatientDataset(Dataset):
                 return patch.transpose(1, 2).flip(1)
             else:
                 return patch.transpose(1, 2).flip(1).flip(2)
-
 
