@@ -122,6 +122,7 @@ class PatientDataset(Dataset):
         else:
             return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_train_patches
 
+
     def index_to_slide(self, index):
         for i in range(len(self.train_slide_ids)):
             if index < len(self.train_patch_positions[i]):
@@ -129,6 +130,7 @@ class PatientDataset(Dataset):
                 return i, (patch_position[1], patch_position[0])
             else:
                 index -= len(self.train_patch_positions[i])
+
 
     def read_block_mag_zero(self, index):
         slide_index = index // NUM_FLIPS_ROTATIONS
@@ -141,14 +143,14 @@ class PatientDataset(Dataset):
         x = center_x - zoomed_size // 2
         y = center_y - zoomed_size // 2
 
-        return self.read_block(index, 0, x, y, slide=slide)
+        return self.read_block(index // NUM_FLIPS_ROTATIONS, 0, x, y, slide=slide)
 
     # x y is the coordinate of the top-left corner of the patch to read in the overall image
     # mag_level controls the magnification of the patch
-    def read_block(self, index, mag_level, x, y, slide=None):
-        slide_index = index // NUM_FLIPS_ROTATIONS
+    def read_block(self, slide_index, mag_level, x, y, slide=None):
         if slide == None:
             slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
+
         width, height = slide.size
 
         image_size = MAG_LEVEL_SIZES[mag_level]
@@ -171,7 +173,6 @@ class PatientDataset(Dataset):
         patch_height = int(cropped_height * (self.patch_size / image_size))
 
         cropped_patch = slide.read_block((cropped_x, cropped_y, cropped_width, cropped_height), size=(patch_width, patch_height))
-        print("cropped_patch", cropped_patch.shape)
 
         # x and y are relative to the actual kidney image, and we need coordinates
         # relative to the patch we are returning. x and y define the top-left corner
@@ -187,21 +188,16 @@ class PatientDataset(Dataset):
         patch_x = int(patch_x * (self.patch_size / image_size))
         patch_y = int(patch_y * (self.patch_size / image_size))
 
-        print(x, y, cropped_x, cropped_y, width, height, patch_width, patch_height, patch_x, patch_y)
         patch[patch_y:patch_y+patch_height, patch_x:patch_x+patch_width] = cropped_patch
-        print("assignment", patch.shape)
 
         # Convert the patch to a tensor
         patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
-        print("torch", patch.shape)
 
         return patch
 
 
     def read_block_and_zoomed(self, index):
         slide_index, patch_position = self.index_to_slide(index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS))
-        slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
-        width, height = slide.size
 
         translation_index = index // NUM_FLIPS_ROTATIONS
         if translation_index % NUM_TRANSLATIONS == 0:
@@ -214,67 +210,43 @@ class PatientDataset(Dataset):
             x, y = (patch_position[0], patch_position[1] + self.patch_size // 2)
 
 
-        center_x = x + self.patch_size // 2
-        center_y = y + self.patch_size // 2
-        zoomed_size = MAG_LEVEL_SIZES[self.magnification_level]
+        image_size = MAG_LEVEL_SIZES[self.magnification_level]
+        center_x = x + image_size // 2
+        center_y = y + image_size // 2
+        zoomed_size = MAG_LEVEL_SIZES[self.magnification_level - 1]
         zoomed_x = center_x - zoomed_size // 2
         zoomed_y = center_y - zoomed_size // 2
 
-        patch = slide.read_block((x, y, self.patch_size, self.patch_size), size=(self.patch_size, self.patch_size))
-        zoomed_patch = slide.read_block((zoomed_x, zoomed_y, zoomed_size, zoomed_size), size=(self.patch_size, self.patch_size))
-
-        # Replace any black pixels with the default background colour for slide image
-        zoomed_patch[np.all(zoomed_patch == [0, 0, 0], axis=-1)] = [242, 243, 242]
-
-        # Convert the patch to a tensor
-        patch = torch.from_numpy(patch / 255).permute((2, 0, 1)).float()
-        zoomed_patch = torch.from_numpy(zoomed_patch / 255).permute((2, 0, 1)).float()
+        patch = self.read_block(slide_index, self.magnification_level, x, y) 
+        zoomed_patch = self.read_block(slide_index, self.magnification_level - 1, zoomed_x, zoomed_y)
 
         return patch, zoomed_patch
+
+
+    def flip_rotate_patch(self, index, patch):
+        if index % NUM_FLIPS_ROTATIONS == 0:
+            return patch
+        elif index % NUM_FLIPS_ROTATIONS == 1:
+            return patch.flip(2)
+        elif index % NUM_FLIPS_ROTATIONS == 2:
+            return patch.flip(1)
+        elif index % NUM_FLIPS_ROTATIONS == 3:
+            return patch.flip(1).flip(2)
+        elif index % NUM_FLIPS_ROTATIONS == 4:
+            return patch.transpose(1, 2)
+        elif index % NUM_FLIPS_ROTATIONS == 5:
+            return patch.transpose(1, 2).flip(2)
+        elif index % NUM_FLIPS_ROTATIONS == 6:
+            return patch.transpose(1, 2).flip(1)
+        else:
+            return patch.transpose(1, 2).flip(1).flip(2)
 
 
     def __getitem__(self, index):
         if self.magnification_level > 0:
             patch, zoomed_patch = self.read_block_and_zoomed(index)
-
-            # Rotate and flip the patch
-            if index % NUM_FLIPS_ROTATIONS == 0:
-                return patch, zoomed_patch
-            elif index % NUM_FLIPS_ROTATIONS == 1:
-                return patch.flip(2), zoomed_patch.flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 2:
-                return patch.flip(1), zoomed_patch.flip(1)
-            elif index % NUM_FLIPS_ROTATIONS == 3:
-                return patch.flip(1).flip(2), zoomed_patch.flip(1).flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 4:
-                return patch.transpose(1, 2), zoomed_patch.transpose(1, 2)
-            elif index % NUM_FLIPS_ROTATIONS == 5:
-                return patch.transpose(1, 2).flip(2), zoomed_patch.transpose(1, 2).flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 6:
-                return patch.transpose(1, 2).flip(1), zoomed_patch.transpose(1, 2).flip(1)
-            else:
-                return patch.transpose(1, 2).flip(1).flip(2), zoomed_patch.transpose(1, 2).flip(1).flip(2)
+            return self.flip_rotate_patch(index, patch), self.flip_rotate_patch(index, zoomed_patch)
         else:
             patch = self.read_block_mag_zero(index)
-            print(type(patch))
-            print(patch.shape)
-            print(index % NUM_FLIPS_ROTATIONS)
-
-            # Rotate and flip the patch
-            if index % NUM_FLIPS_ROTATIONS == 0:
-                return patch
-            elif index % NUM_FLIPS_ROTATIONS == 1:
-                return patch.flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 2:
-                return patch.flip(1)
-            elif index % NUM_FLIPS_ROTATIONS == 3:
-                return patch.flip(1).flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 4:
-                return patch.transpose(1, 2)
-            elif index % NUM_FLIPS_ROTATIONS == 5:
-                return patch.transpose(1, 2).flip(2)
-            elif index % NUM_FLIPS_ROTATIONS == 6:
-                return patch.transpose(1, 2).flip(1)
-            else:
-                return patch.transpose(1, 2).flip(1).flip(2)
+            return self.flip_rotate_patch(index, patch)
 

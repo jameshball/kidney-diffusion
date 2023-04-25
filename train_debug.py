@@ -9,6 +9,7 @@ from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet, SRUnet1024, El
 from matplotlib import pyplot as plt, cm
 from torch import nn
 from torch.utils.data import Subset, DataLoader
+from torchvision.utils import save_image
 import torchvision.transforms as T
 
 from ultra_res_patient_dataset import PatientDataset
@@ -70,20 +71,22 @@ def main():
     print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
 
-    train_dl = DataLoader(train_dataset, batch_size=8, num_workers=args.num_workers)
-    valid_dl = DataLoader(valid_dataset, batch_size=8, num_workers=args.num_workers)
-
-
     index = 0
-    for patch in train_dataset:
-        print(patch)
-        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        plt.savefig(f"test_img{index}.png")
-        plt.show()
+    for data in train_dataset:
+        if args.magnification_level == 0:
+            patch, zoomed_patch = data, None
+        else:
+            patch, zoomed_patch = data
+
+        print(f"saving image {index}")
+        save_image(patch.cpu(), f"test_img_{index}_mag_level_{args.magnification_level}.png")
+
+        if zoomed_patch != None:
+            print(f"saving zoomed image {index}")
+            save_image(zoomed_patch.cpu(), f"test_img_{index}_zoomed_mag_level_{args.magnification_level}.png")
 
         index += 1
-
-        if index > 10:
+        if index > 100:
             break
         
 
