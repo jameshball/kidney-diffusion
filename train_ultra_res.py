@@ -86,6 +86,7 @@ def init_imagen(magnification_level, unet_number):
         timesteps=(1024, 256, 256),
         pred_objectives=("noise", "v", "v"),
         random_crop_sizes=(None, None, 256),
+        condition_on_text=False,
     ).cuda()
 
     return imagen
@@ -141,15 +142,6 @@ def main():
     train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
     valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
 
-    for i in range(10):
-        if args.magnification_level == 0:
-            patch = train_dataset[i]
-        else:
-            patch, zoomed_patch = train_dataset[i]
-
-        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        plt.show()
-
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
 
@@ -201,19 +193,34 @@ def main():
             trainer.accelerator.print("Saving model and sampling")
 
             if trainer.is_main:
-                lowres_image, conds, labelmap = dataset[0]
-                rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
+                lowres_zoomed_image = None
+                rand_zoomed_image = None
+                if args.magnification_level == 0:
+                    lowres_image = dataset[0]
+                    rand_image = dataset[np.random.randint(len(dataset))]
+                else:
+                    lowres_image, lowres_zoomed_image = dataset[0]
+                    rand_image, rand_zoomed_image = dataset[np.random.randint(len(dataset))]
 
                 with torch.no_grad():
-                    images = trainer.sample(
-                        batch_size=2,
-                        return_pil_images=False,
-                        text_embeds=torch.stack([conds, rand_conds]),
-                        start_image_or_video=torch.stack([lowres_image, rand_image]),
-                        start_at_unet_number=args.unet_number,
-                        stop_at_unet_number=args.unet_number,
-                        cond_images=torch.stack([labelmap, rand_labelmap]),
-                    )
+                    if lowres_zoomed_image == None:
+                        images = trainer.sample(
+                            batch_size=2,
+                            return_pil_images=False,
+                            start_image_or_video=torch.stack([lowres_image, rand_image]),
+                            start_at_unet_number=args.unet_number,
+                            stop_at_unet_number=args.unet_number,
+                        )
+                    else:
+                        images = trainer.sample(
+                            batch_size=2,
+                            return_pil_images=False,
+                            start_image_or_video=torch.stack([lowres_image, rand_image]),
+                            start_at_unet_number=args.unet_number,
+                            stop_at_unet_number=args.unet_number,
+                            cond_images=torch.stack([lowres_zoomed_image, rand_zoomed_image]),
+                        )
+
 
                 for index in range(len(images)):
                     T.ToPILImage()(images[index]).save(f'samples/{run_id}/sample-{step_num}-{run_id}-{index}.png')

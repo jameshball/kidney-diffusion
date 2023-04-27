@@ -73,8 +73,9 @@ def main():
 
     index = 0
     for data in train_dataset:
+        zoomed_patch = None
         if args.magnification_level == 0:
-            patch, zoomed_patch = data, None
+            patch = data
         else:
             patch, zoomed_patch = data
 
