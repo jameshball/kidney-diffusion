@@ -14,6 +14,7 @@ import numpy as np
 NUM_FLIPS_ROTATIONS = 8
 NUM_TRANSLATIONS =  4
 MAG_LEVEL_SIZES = [40000, 6500, 1024]
+FILL_COLOR = (242, 243, 242)
 
 
 class PatientDataset(Dataset):
@@ -155,7 +156,7 @@ class PatientDataset(Dataset):
 
         image_size = MAG_LEVEL_SIZES[mag_level]
 
-        patch = np.full((self.patch_size, self.patch_size, 3), (242, 243, 242))
+        patch = np.full((self.patch_size, self.patch_size, 3), FILL_COLOR)
 
         # if coords are negative, cap to 0
         cropped_x = max(x, 0)
