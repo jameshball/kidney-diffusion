@@ -75,7 +75,7 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-def init_imagen(magnification_level, unet_number):
+def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
     imagen = Imagen(
         unets=(
             unet_generator(magnification_level, 1) if unet_number == 1 else FixedNullUnet(),
@@ -87,7 +87,7 @@ def init_imagen(magnification_level, unet_number):
         pred_objectives=("noise", "v", "v"),
         random_crop_sizes=(None, None, 256),
         condition_on_text=False,
-    ).cuda()
+    ).to(device)
 
     return imagen
 
