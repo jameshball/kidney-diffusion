@@ -191,7 +191,8 @@ def get_cond_images(zoomed_image, mag_level):
     mag_patch_size = int(MAG_LEVEL_SIZES[mag_level] * PATCH_SIZE / MAG_LEVEL_SIZES[mag_level - 1])
     print("mag_patch_size", mag_level, mag_patch_size)
 
-    num_mag_images_width = math.ceil(zoomed_image.shape[3] / mag_patch_size)
+    zoomed_image_width = zoomed_image.shape[3]
+    num_mag_images_width = math.ceil(zoomed_image_width / mag_patch_size)
 
     mag_cond_images = []
     mag_cond_images_pos = []
@@ -208,8 +209,8 @@ def get_cond_images(zoomed_image, mag_level):
             # aligns with the center of this patch. So PATCH_SIZE // 2
             # in the generated image should be aligned with center_y and center_x
 
-            shift_y = PATCH_SIZE // 2 - center_y
-            shift_x = PATCH_SIZE // 2 - center_x
+            shift_y = zoomed_image_width // 2 - center_y
+            shift_x = zoomed_image_width // 2 - center_x
 
             # Shift the image horizontally and vertically
             shifted_img = torch.roll(zoomed_image[0], shifts=(shift_y, shift_x), dims=(1, 2))
@@ -231,7 +232,7 @@ def get_cond_images(zoomed_image, mag_level):
             mag_cond_images.append(shifted_img)
             mag_cond_images_pos.append((i, j))
 
-    return mag_cond_images.cat(dim=0), mag_cond_images_pos, num_mag_images_width
+    return torch.stack(mag_cond_images), mag_cond_images_pos, num_mag_images_width
 
 
 def generate_high_res_image(zoomed_image, mag_level, args):
