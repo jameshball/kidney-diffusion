@@ -5,26 +5,23 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 import argparse
 import math
+from skimage import color
+import cv2
+import numpy as np
 
-from imagen_pytorch import Unet, ImagenTrainer, Imagen, NullUnet
 from imagen_pytorch.trainer import restore_parts
 from imagen_pytorch.version import __version__
 from packaging import version
-from torch import nn
 from torchvision.utils import save_image
 import torchvision.transforms as transforms
 
-from train_ultra_res import unet_generator, init_imagen
+from train_ultra_res import init_imagen
 from ultra_res_patient_dataset import MAG_LEVEL_SIZES
 
 import os
 import gc
-import pandas as pd
-from glob import glob
 
 from fsspec.core import url_to_fs
-
-import re
 
 PATCH_SIZE = 1024
 BATCH_SIZES = [128, 64, 6]
@@ -50,7 +47,7 @@ def load_model(mag_level, unet_number, device, args):
         imagen.load_state_dict(loaded_obj['model'], strict=True)
     except RuntimeError:
         print("Failed loading state dict. Trying partial load")
-        imagen.load_state_dict(restore_parts(self.imagen.state_dict(), loaded_obj['model']))
+        imagen.load_state_dict(restore_parts(imagen.state_dict(), loaded_obj['model']))
     
     print("loaded checkpoint for", checkpoint_name)
     
@@ -194,45 +191,70 @@ def get_cond_images(zoomed_image, mag_level):
     zoomed_image_width = zoomed_image.shape[3]
     num_mag_images_width = math.ceil(zoomed_image_width / mag_patch_size)
 
+    # we want to filter out white patches to save time
+    if mag_level == 2:
+        zoomed_image_np = zoomed_image.cpu().numpy()
+
+        # Mask out the background
+        img_hs = color.rgb2hsv(zoomed_image_np)
+        img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
+
+        # remove small objects
+        img_hs = cv2.erode(img_hs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+
+        # grow the mask
+        kernel = np.ones((51, 51), np.uint8)
+        img_hs = cv2.dilate(img_hs.astype(np.uint8), kernel, iterations=1)
+
+        # find patches of 161x161 that have mask > 0.5
+        # iterate over patch positions and check if the mask is > 0.5
+        patch_pos = []
+        for i in range(num_mag_images_width):
+            for j in range(num_mag_images_width):
+                patch = img_hs[i * mag_patch_size:(i + 1) * mag_patch_size, j * mag_patch_size:(j + 1) * mag_patch_size]
+                # if any of the pixels in the patch are > 0.5, then add the patch to the list
+                if np.any(patch > 0.5):
+                    patch_pos.append((i, j))
+    else:
+        patch_pos = [(i, j) for i in range(num_mag_images_width) for j in range(num_mag_images_width)]
+    
+    print("Generating", len(patch_pos), "images for mag", mag_level)
+
     mag_cond_images = []
-    mag_cond_images_pos = []
 
-    for i in range(num_mag_images_width):
-        for j in range(num_mag_images_width):
-            y = i * mag_patch_size
-            x = j * mag_patch_size
+    for i, j in patch_pos:
+        y = i * mag_patch_size
+        x = j * mag_patch_size
 
-            center_y = y + mag_patch_size // 2
-            center_x = x + mag_patch_size // 2
+        center_y = y + mag_patch_size // 2
+        center_x = x + mag_patch_size // 2
 
-            # need to move the mag0_image so that the center of it
-            # aligns with the center of this patch. So PATCH_SIZE // 2
-            # in the generated image should be aligned with center_y and center_x
+        # need to move the mag0_image so that the center of it
+        # aligns with the center of this patch. So zoomed_image_width // 2
+        # in the generated image should be aligned with center_y and center_x
+        shift_y = zoomed_image_width // 2 - center_y
+        shift_x = zoomed_image_width // 2 - center_x
 
-            shift_y = zoomed_image_width // 2 - center_y
-            shift_x = zoomed_image_width // 2 - center_x
+        # Shift the image horizontally and vertically
+        shifted_img = torch.roll(zoomed_image[0], shifts=(shift_y, shift_x), dims=(1, 2))
 
-            # Shift the image horizontally and vertically
-            shifted_img = torch.roll(zoomed_image[0], shifts=(shift_y, shift_x), dims=(1, 2))
+        # Fill any gaps with the fill_color
+        if shift_y > 0:
+            shifted_img[:, :shift_y, :] = FILL_COLOR
+        else:
+            shifted_img[:, shift_y:, :] = FILL_COLOR
 
-            # Fill any gaps with the fill_color
-            if shift_y > 0:
-                shifted_img[:, :shift_y, :] = FILL_COLOR
-            else:
-                shifted_img[:, shift_y:, :] = FILL_COLOR
+        if shift_x > 0:
+            shifted_img[:, :, :shift_x] = FILL_COLOR
+        else:
+            shifted_img[:, :, shift_x:] = FILL_COLOR
 
-            if shift_x > 0:
-                shifted_img[:, :, :shift_x] = FILL_COLOR
-            else:
-                shifted_img[:, :, shift_x:] = FILL_COLOR
+        # This shouldn't do anything for mag1 since zoomed_image is 1024x1024
+        shifted_img = transforms.CenterCrop(PATCH_SIZE)(shifted_img)
 
-            # This shouldn't do anything for mag1 since zoomed_image is 1024x1024
-            shifted_img = transforms.CenterCrop(PATCH_SIZE)(shifted_img)
+        mag_cond_images.append(shifted_img)
 
-            mag_cond_images.append(shifted_img)
-            mag_cond_images_pos.append((i, j))
-
-    return torch.stack(mag_cond_images), mag_cond_images_pos, num_mag_images_width
+    return torch.stack(mag_cond_images), patch_pos, num_mag_images_width
 
 
 def generate_high_res_image(zoomed_image, mag_level, args):
