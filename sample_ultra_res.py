@@ -2,6 +2,7 @@ from uuid import uuid4
 
 import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
 import argparse
 import math
 
@@ -191,10 +192,9 @@ def get_cond_images(zoomed_image, mag_level):
     print("mag_patch_size", mag_level, mag_patch_size)
 
     num_mag_images_width = math.ceil(zoomed_image.shape[3] / mag_patch_size)
-    num_mag_images = num_mag_images_width * num_mag_images_width
-    print("num mag images", mag_level, num_mag_images)
 
-    mag_cond_images = torch.zeros(num_mag_images, 3, PATCH_SIZE, PATCH_SIZE)
+    mag_cond_images = []
+    mag_cond_images_pos = []
 
     for i in range(num_mag_images_width):
         for j in range(num_mag_images_width):
@@ -228,26 +228,27 @@ def get_cond_images(zoomed_image, mag_level):
             # This shouldn't do anything for mag1 since zoomed_image is 1024x1024
             shifted_img = transforms.CenterCrop(PATCH_SIZE)(shifted_img)
 
-            mag_cond_images[i * num_mag_images_width + j] = shifted_img
+            mag_cond_images.append(shifted_img)
+            mag_cond_images_pos.append((i, j))
 
-    return mag_cond_images
+    return mag_cond_images.cat(dim=0), mag_cond_images_pos, num_mag_images_width
 
 
 def generate_high_res_image(zoomed_image, mag_level, args):
-    mag_cond_images = get_cond_images(zoomed_image, mag_level)
+    mag_cond_images, mag_cond_images_pos, num_mag_images_width = get_cond_images(zoomed_image, mag_level)
     mag_images = generate_image(mag_level, args, cond_image=mag_cond_images)
 
     print(mag_images.shape[0])
-    mag_num_images_width = int(math.sqrt(mag_images.shape[0]))
-    mag_full_image_width = mag_num_images_width * PATCH_SIZE
-    mag_full_image = torch.zeros(1, 3, mag_full_image_width, mag_full_image_width)
+    mag_full_image_width = num_mag_images_width * PATCH_SIZE
+    # Initially, mag_full_image is zoomed_image resized to the correct size. We
+    # then replace some of the patches with the generated images
+    mag_full_image = F.interpolate(zoomed_image, size=(mag_full_image_width, mag_full_image_width), mode='bilinear', align_corners=False)
 
-    for i in range(mag_num_images_width):
-        for j in range(mag_num_images_width):
-            y = i * PATCH_SIZE
-            x = j * PATCH_SIZE
+    for index, (i, j) in enumerate(mag_cond_images_pos):
+        y = i * PATCH_SIZE
+        x = j * PATCH_SIZE
 
-            mag_full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[i * mag_num_images_width + j]
+        mag_full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[index]
 
     return mag_full_image
 
