@@ -11,6 +11,7 @@ from imagen_pytorch.version import __version__
 from packaging import version
 from torch import nn
 from torchvision.utils import save_image
+import torchvision.transforms as transforms
 
 from train_ultra_res import unet_generator, init_imagen
 from ultra_res_patient_dataset import MAG_LEVEL_SIZES
@@ -25,7 +26,7 @@ from fsspec.core import url_to_fs
 import re
 
 PATCH_SIZE = 1024
-BATCH_SIZES = [64, 48, 4]
+BATCH_SIZES = [128, 64, 6]
 FILL_COLOR = 0.95
 
 
@@ -55,6 +56,13 @@ def load_model(mag_level, unet_number, device, args):
     return imagen
 
 
+def print_memory_usage(rank):
+    t = torch.cuda.get_device_properties(0).total_memory
+    r = torch.cuda.memory_reserved(0)
+    a = torch.cuda.memory_allocated(0)
+    print(f"cuda:{rank} total memory: {t}, reserverd memory: {r}, allocated memory: {a}, free memory: {r-a}")
+
+
 def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out_queue):
     device = torch.device(f"cuda:{rank}")
     print("Starting process on ", device)
@@ -71,6 +79,8 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             batch_cond_image = batch_cond_image.to(device)
         if batch_lowres_image != None:
             batch_lowres_image = batch_lowres_image.to(device)
+
+        print_memory_usage(rank)
 
         batch_image = imagen.sample(
             batch_size=end_index - start_index,
@@ -99,8 +109,13 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image=None, co
 
     batch_size = BATCH_SIZES[unet_number - 1]
 
+
     if cond_image is not None:
         num_cond_images = cond_image.shape[0]
+        # divide batches across all gpus if we can to save time, even
+        # if this results in decreasing the batch size
+        if batch_size * args.num_gpus > num_cond_images:
+            batch_size = math.ceil(num_cond_images / args.num_gpus)
         num_batches = int(math.ceil(num_cond_images / batch_size))
     else:
         num_cond_images = 1
@@ -129,13 +144,14 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image=None, co
         in_queue.put(None)
 
     results = [out_queue.get() for _ in range(num_batches)]
-    images = [image_batch.cuda() for start_idx, image_batch in sorted(results, key=lambda x: x[0])]
+    images = [image_batch.cpu() for start_idx, image_batch in sorted(results, key=lambda x: x[0])]
 
     for p in processes:
         p.join()
 
     # Concatenate the resulting batch of tensors into a single tensor using torch.cat()
-    all_images = torch.cat(images, dim=0)
+    # Need this on cpu because they are massive tensors
+    all_images = torch.cat(images, dim=0).cpu()
 
     return all_images
 
@@ -160,16 +176,25 @@ def generate_image(mag_level, args, cond_image=None):
 #
 # So split the image into these patches, and move each image around
 # so that the patch is at the center.
+#
+# FOR MAG2
+# Zoomed image is now much larger than patch_size. Each PATCH_SIZE
+# patch in the image is the correct scale for a 6500x6500 patch that
+# will be used to condition mag2 generation.
+#
+# So basically, we just need to find all the patches we need to
+# generate for mag2, then get a PATCH_SIZE crop around that area in
+# the mag1 full scale image
 def get_cond_images(zoomed_image, mag_level):
     # patch size of a mag1 image within the generated mag0 image
     mag_patch_size = int(MAG_LEVEL_SIZES[mag_level] * PATCH_SIZE / MAG_LEVEL_SIZES[mag_level - 1])
     print("mag_patch_size", mag_level, mag_patch_size)
 
-    num_mag_images_width = math.ceil(PATCH_SIZE / mag_patch_size)
+    num_mag_images_width = math.ceil(zoomed_image.shape[3] / mag_patch_size)
     num_mag_images = num_mag_images_width * num_mag_images_width
     print("num mag images", mag_level, num_mag_images)
 
-    mag_cond_images = torch.zeros(num_mag_images, zoomed_image.shape[1], zoomed_image.shape[2], zoomed_image.shape[3])
+    mag_cond_images = torch.zeros(num_mag_images, 3, PATCH_SIZE, PATCH_SIZE)
 
     for i in range(num_mag_images_width):
         for j in range(num_mag_images_width):
@@ -200,9 +225,31 @@ def get_cond_images(zoomed_image, mag_level):
             else:
                 shifted_img[:, :, shift_x:] = FILL_COLOR
 
+            # This shouldn't do anything for mag1 since zoomed_image is 1024x1024
+            shifted_img = transforms.CenterCrop(PATCH_SIZE)(shifted_img)
+
             mag_cond_images[i * num_mag_images_width + j] = shifted_img
 
     return mag_cond_images
+
+
+def generate_high_res_image(zoomed_image, mag_level, args):
+    mag_cond_images = get_cond_images(zoomed_image, mag_level)
+    mag_images = generate_image(mag_level, args, cond_image=mag_cond_images)
+
+    print(mag_images.shape[0])
+    mag_num_images_width = int(math.sqrt(mag_images.shape[0]))
+    mag_full_image_width = mag_num_images_width * PATCH_SIZE
+    mag_full_image = torch.zeros(1, 3, mag_full_image_width, mag_full_image_width)
+
+    for i in range(mag_num_images_width):
+        for j in range(mag_num_images_width):
+            y = i * PATCH_SIZE
+            x = j * PATCH_SIZE
+
+            mag_full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[i * mag_num_images_width + j]
+
+    return mag_full_image
 
 
 def main():
@@ -217,23 +264,12 @@ def main():
 
     mag0_images = generate_image(0, args)
     save_image(mag0_images[0], f'samples/MAG0-{sample_id}.png')
-    mag1_cond_images = get_cond_images(mag0_images, 1)
-    mag1_images = generate_image(1, args, cond_image=mag1_cond_images)
-
-    mag1_num_images_width = int(math.sqrt(mag1_images.shape[0]))
-    mag1_full_image_width = mag1_num_images_width * PATCH_SIZE
-    mag1_full_image = torch.zeros(1, 3, mag1_full_image_width, mag1_full_image_width)
-
-    for i in range(mag1_num_images_width):
-        for j in range(mag1_num_images_width):
-            y = i * PATCH_SIZE
-            x = j * PATCH_SIZE
-
-            mag1_full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag1_images[i * mag1_num_images_width + j]
-
     
+    mag1_full_image = generate_high_res_image(mag0_images, 1, args)
     save_image(mag1_full_image[0], f'samples/MAG1-{sample_id}.png')
 
+    mag2_full_image = generate_high_res_image(mag1_full_image, 2, args)
+    save_image(mag2_full_image[0], f'samples/MAG2-{sample_id}.png')
 
 def parse_args():
     parser = argparse.ArgumentParser()
