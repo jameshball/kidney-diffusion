@@ -187,6 +187,14 @@ def main():
             if trainer.is_main:
                 log_wandb(step_num, loss, validation=True)
 
+        if not (step_num % args.save_freq):
+            trainer.accelerator.wait_for_everyone()
+            unique_path = f"{re.sub(r'.pt$', '', checkpoint_path)}_{step_num}.pt"
+            trainer.accelerator.print("Saving model...")
+            trainer.save(unique_path)
+            trainer.accelerator.print("Saved model under unique name:")
+            
+
         if not (step_num % args.sample_freq):
             trainer.accelerator.wait_for_everyone()
             trainer.accelerator.print()
@@ -239,6 +247,7 @@ def parse_args():
     parser.add_argument('--unet_number', type=int, choices=range(1, 4), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
+    parser.add_argument('--save_freq', type=int, default=50000, help='How many steps between saving a checkpoint under a unique name')
     parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)

@@ -193,11 +193,11 @@ def get_cond_images(zoomed_image, mag_level):
 
     # we want to filter out white patches to save time
     if mag_level == 2:
-        zoomed_image_np = zoomed_image.cpu().numpy()
+        zoomed_image_np = zoomed_image[0].permute(1, 2, 0).cpu().numpy()
 
         # Mask out the background
         img_hs = color.rgb2hsv(zoomed_image_np)
-        img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
+        img_hs = np.logical_and(img_hs[:, :, 0] > 0.5, img_hs[:, :, 1] > 0.02)
 
         # remove small objects
         img_hs = cv2.erode(img_hs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
