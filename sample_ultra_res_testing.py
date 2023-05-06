@@ -17,6 +17,25 @@ import cv2
 import re
 
 
+def get_next_patches(patches, patch_dist, patch_width, orientation):
+    processed_patches = []
+    waiting_patches = []
+    for i, j in patches:
+        y = i * patch_dist
+        x = j * patch_dist
+
+        if (i - 1, j) not in patches and (i, j + orientation) not in patches and (i - 1, j + orientation) not in patches:
+            processed_patches.append((i, j))
+            plt.plot([x, x + patch_width, x + patch_width, x, x],
+                        [y, y, y + patch_width, y + patch_width, y], 'g')
+        else:
+            waiting_patches.append((i, j))
+            plt.plot([x, x + patch_width, x + patch_width, x, x],
+                        [y, y, y + patch_width, y + patch_width, y], 'r')
+    
+    return processed_patches, waiting_patches
+
+
 def main():
     args = parse_args()
     
@@ -39,7 +58,7 @@ def main():
 
         # Mask out the background
         img_hs = color.rgb2hsv(small_img)
-        img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
+        img_hs = np.logical_and(img_hs[:, :, 0] > 0.5, img_hs[:, :, 1] > 0.02)
 
         # remove small objects
         img_hs = cv2.erode(img_hs.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
@@ -50,11 +69,17 @@ def main():
 
         # find patches of 161x161 that have mask > 0.5
         # iterate over patch positions and check if the mask is > 0.5
-        num_patches = math.ceil(img_hs.shape[0] / 161)
+        patch_width = 161
+        patch_overlap = 0.25
+        patch_dist = int(patch_width * (1 - patch_overlap))
+        num_patches = math.ceil(img_hs.shape[0] / (patch_width * (1 - patch_overlap)))
         patches = []
         for i in range(num_patches):
             for j in range(num_patches):
-                patch = img_hs[i * 161:(i + 1) * 161, j * 161:(j + 1) * 161]
+                y = i * patch_dist
+                x = j * patch_dist
+
+                patch = img_hs[y:y + patch_width, x:x + patch_width]
                 # if any of the pixels in the patch are > 0.5, then add the patch to the list
                 if np.any(patch > 0.5):
                     patches.append((i, j))
@@ -64,11 +89,33 @@ def main():
         plt.imshow(small_img)
         plt.imshow(img_hs, alpha=0.5)
         for i, j in patches:
-            plt.plot([j * 161, j * 161 + 161, j * 161 + 161, j * 161, j * 161],
-                     [i * 161, i * 161, i * 161 + 161, i * 161 + 161, i * 161], 'r')
-        plt.show()
+            y = i * patch_dist
+            x = j * patch_dist
 
+            plt.plot([x, x + patch_width, x + patch_width, x, x],
+                     [y, y, y + patch_width, y + patch_width, y], 'r')
+            
+        
         print(f'Found {len(patches)} patches for {slide_id}')
+
+        num_top_left_patches = len(get_next_patches(patches, patch_dist, patch_width, -1)[0])
+        num_top_right_patches = len(get_next_patches(patches, patch_dist, patch_width, 1)[0])
+
+        if num_top_left_patches > num_top_right_patches:
+            orientation = -1
+        else:
+            orientation = 1
+
+        while len(patches) != 0:
+            print("in loop, " + str(len(patches)) + " patches left")
+            processed_patches, waiting_patches = get_next_patches(patches, patch_dist, patch_width, orientation)
+            
+            print("processed", len(processed_patches), "patches")
+            patches = waiting_patches
+            
+            plt.pause(1)
+        
+        plt.show()
 
 
 def parse_args():
