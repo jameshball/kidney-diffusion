@@ -16,7 +16,7 @@ from glob import glob
 
 import re
 
-BATCH_SIZES = [128, 64, 2]
+BATCH_SIZES = [128, 64, 6]
 
 def generate_images(unet_number, args, lowres_images=None):
     imagen = init_imagen(unet_number)
@@ -61,7 +61,10 @@ def generate_images(unet_number, args, lowres_images=None):
     gc.collect()
     torch.cuda.empty_cache()
 
-    return torch.cat(all_images, dim=0)
+    if unet_number == 3:
+        return [image for sublist in all_images for image in sublist]
+    else:
+        return torch.cat(all_images, dim=0)
 
 
 def main():
