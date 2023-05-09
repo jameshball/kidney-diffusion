@@ -89,24 +89,27 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             above_next_to_patch = None
 
             above = (i - 1, j)
+            above_idx = -1 if above not in patch_pos else patch_pos.index(above)
             next_to = (i, j + orientation)
+            next_to_idx = -1 if next_to not in patch_pos else patch_pos.index(next_to)
             above_next_to = (i - 1, j + orientation)
-            above_exists = above in patches_generated or above not in patch_pos
-            next_to_exists = next_to in patches_generated or next_to not in patch_pos
-            above_next_to_exists = above_next_to in patches_generated or above_next_to not in patch_pos
+            above_next_to_idx = -1 if above_next_to not in patch_pos else patch_pos.index(above_next_to)
+            above_exists = above_idx in patches_generated or above not in patch_pos
+            next_to_exists = next_to_idx in patches_generated or next_to not in patch_pos
+            above_next_to_exists = above_next_to_idx in patches_generated or above_next_to not in patch_pos
 
             if above_exists and next_to_exists and above_next_to_exists:
-                if above in patches_generated:
-                    above_patch = patches_generated[above]
-                if next_to in patches_generated:
-                    next_to_patch = patches_generated[next_to]
-                if above_next_to in patches_generated:
-                    above_next_to_patch = patches_generated[above_next_to]
+                if above_idx in patches_generated:
+                    above_patch = patches_generated[above_idx][0]
+                if next_to_idx in patches_generated:
+                    next_to_patch = patches_generated[next_to_idx][0]
+                if above_next_to_idx in patches_generated:
+                    above_next_to_patch = patches_generated[above_next_to_idx][0]
             else:
                 in_queue.put((idx, batch_lowres_image, batch_cond_image, pos))
                 continue
 
-            print(f"generating patch at {pos} which is index {idx}")
+            print(f"generating patch at {pos} which is index {idx}", flush=True)
 
             # inpaint_patch is the patch that will be generated with above, next_to, and above_next_to patches
             # already generated. They need to be added to the inpaint_patch in the correct positions
@@ -151,7 +154,7 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             inpaint_mask = inpaint_mask.unsqueeze(0).to(device)
             
         if batch_cond_image != None:
-            batch_cond_image = batch_cond_image.to(device)
+            batch_cond_image = batch_cond_image.unsqueeze(0).to(device)
         if batch_lowres_image != None:
             batch_lowres_image = batch_lowres_image.to(device)
 
@@ -165,13 +168,15 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             inpaint_images=inpaint_patch,
             inpaint_masks=inpaint_mask,
             inpaint_resample_times=args.inpaint_resample,
+            use_tqdm=False,
             device=device,
         )
             
         if pos is not None:
-            patches_generated[pos] = batch_image[0].cpu()
-            print(f"{len(patches_generated)}/{len(patch_pos)} patches generated")
-        out_queue.put((idx, batch_image))
+            print(f"{len(patches_generated)}/{len(patch_pos)} patches generated", flush=True)
+
+        patches_generated[idx] = batch_image.cpu()
+        out_queue.put((idx,))
 
 
     del imagen
@@ -197,11 +202,11 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image=None, co
     images = []
     for idx in range(num_cond_images):
         # Extract the corresponding batch of cond_images and call trainer.sample()
-        batch_cond_image = None if cond_image is None else cond_image[idx:idx+1]
-        batch_lowres_image = None if lowres_image is None else lowres_image[idx:idx+1]
+        idx_cond_image = None if cond_image is None else cond_image[idx]
+        idx_lowres_image = None if lowres_image is None else lowres_image[idx]
         pos = None if patch_pos is None else patch_pos[idx]
 
-        in_queue.put((idx, batch_lowres_image, batch_cond_image, pos))
+        in_queue.put((idx, idx_lowres_image, idx_cond_image, pos))
 
     num_processes = min(args.num_gpus, num_cond_images)
 
@@ -210,21 +215,26 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image=None, co
         p.start()
         processes.append(p)
 
-    results = [out_queue.get() for _ in range(num_cond_images)]
+    for _ in range(num_cond_images):
+        out_queue.get()
 
     for _ in range(num_processes):
         in_queue.put(None)
 
-    images = [image_batch.cpu() for idx, image_batch in sorted(results, key=lambda x: x[0])]
-
     for p in processes:
         p.join()
 
-    # Concatenate the resulting batch of tensors into a single tensor using torch.cat()
-    # Need this on cpu because they are massive tensors
-    all_images = torch.cat(images, dim=0).cpu()
+    images = [patches_generated[idx] for idx in range(num_cond_images)]
 
-    return all_images
+    if cond_image is not None:
+        del cond_image
+    if lowres_image is not None:
+        del lowres_image
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return images
 
 
 def generate_image(mag_level, args, cond_image=None, patch_pos=None, overlap=0.25, orientation=-1):
@@ -259,11 +269,11 @@ def generate_image(mag_level, args, cond_image=None, patch_pos=None, overlap=0.2
 def get_cond_images(zoomed_image, mag_level, overlap=0.25):
     # patch size of a mag1 image within the generated mag0 image
     patch_width = int(MAG_LEVEL_SIZES[mag_level] * PATCH_SIZE / MAG_LEVEL_SIZES[mag_level - 1])
-    print("mag_patch_size", mag_level, patch_width)
 
     patch_dist = int(patch_width * (1 - overlap))
     zoomed_image_width = zoomed_image.shape[3]
-    num_patches_width = math.ceil(zoomed_image_width / patch_dist)
+    # This takes into account the overlap
+    num_patches_width = 1 + math.ceil((zoomed_image_width - patch_width) / patch_dist)
 
     # we want to filter out white patches to save time
     if mag_level == 2:
@@ -279,6 +289,13 @@ def get_cond_images(zoomed_image, mag_level, overlap=0.25):
         # grow the mask
         kernel = np.ones((51, 51), np.uint8)
         img_hs = cv2.dilate(img_hs.astype(np.uint8), kernel, iterations=1)
+
+        print("cond image details:")
+        print("patch_width", patch_width)
+        print("patch_dist", patch_dist)
+        print("zoomed_image_width", zoomed_image_width)
+        print("num_patches_width", num_patches_width)
+        print("", flush=True)
 
         # find patches of 161x161 that have mask > 0.5
         # iterate over patch positions and check if the mask is > 0.5
@@ -345,18 +362,23 @@ def get_next_patches(patches, orientation):
 
 
 def generate_high_res_image(zoomed_image, mag_level, args):
-    overlap = 0.25
-    cond_images, patch_pos, num_patches_width = get_cond_images(zoomed_image, mag_level, overlap=overlap)
+    cond_images, patch_pos, num_patches_width = get_cond_images(zoomed_image, mag_level, overlap=args.overlap)
 
     num_top_left_patches = len(get_next_patches(patch_pos, -1)[0])
     num_top_right_patches = len(get_next_patches(patch_pos, 1)[0])
 
     orientation = -1 if num_top_left_patches > num_top_right_patches else 1
 
-    mag_images = generate_image(mag_level, args, cond_image=cond_images, patch_pos=patch_pos, overlap=overlap, orientation=orientation)
+    mag_images = generate_image(mag_level, args, cond_image=cond_images, patch_pos=patch_pos, overlap=args.overlap, orientation=orientation)
 
-    patch_dist = int(PATCH_SIZE * (1 - overlap))
+    patch_dist = int(PATCH_SIZE * (1 - args.overlap))
     full_image_width = PATCH_SIZE + (num_patches_width - 1) * patch_dist
+    print("generate high res image details:")
+    print("full_image_width", full_image_width)
+    print("patch_dist", patch_dist)
+    print("num_patches_width", num_patches_width)
+    print("mag_images size", len(mag_images))
+    print("", flush=True)
     # Initially, mag_full_image is zoomed_image resized to the correct size. We
     # then replace some of the patches with the generated images
     full_image = F.interpolate(zoomed_image, size=(full_image_width, full_image_width), mode='bilinear', align_corners=False)
@@ -365,7 +387,7 @@ def generate_high_res_image(zoomed_image, mag_level, args):
         y = i * patch_dist
         x = j * patch_dist
 
-        full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[index]
+        full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[index][0]
 
     return full_image
 
@@ -381,9 +403,9 @@ def main():
     sample_id = uuid4()
 
     mag0_images = generate_image(0, args)
-    save_image(mag0_images[0], f'samples/MAG0-{sample_id}.png')
+    save_image(mag0_images[0][0], f'samples/MAG0-{sample_id}.png')
     
-    mag1_full_image = generate_high_res_image(mag0_images, 1, args)
+    mag1_full_image = generate_high_res_image(mag0_images[0], 1, args)
     save_image(mag1_full_image[0], f'samples/MAG1-{sample_id}.png')
 
     mag2_full_image = generate_high_res_image(mag1_full_image, 2, args)
@@ -402,6 +424,7 @@ def parse_args():
     parser.add_argument('--unet3_mag2', type=str)
     parser.add_argument('--num_gpus', type=int)
     parser.add_argument('--inpaint_resample', type=int)
+    parser.add_argument('--overlap', type=float)
     return parser.parse_args()
 
 
