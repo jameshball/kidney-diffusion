@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.data import Subset, DataLoader
 import torchvision.transforms as T
 
-from patient_dataset import PatientDataset
+from ultra_res_patient_dataset import PatientDataset
 import os
 import pandas as pd
 from glob import glob
@@ -21,47 +21,42 @@ import re
 import gc
 
 
-TEXT_EMBED_DIM = 3
 SPLIT_VALID_FRACTION = 0.025
 
 
-def unet_generator(unet_number):
+def unet_generator(magnification_level, unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
             dim_mults=(1, 2, 3, 4),
-            cond_dim=512,
-            text_embed_dim=3,
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
-            cond_images_channels=4,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     if unet_number == 2:
         return Unet(
             dim=128,
-            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
             num_resnet_blocks=2,
             memory_efficient=True,
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=4,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
     
     if unet_number == 3:
         return Unet(
             dim=128,
-            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
-            num_resnet_blocks=(2, 4, 4, 4),
+            num_resnet_blocks=(2, 4, 6, 8),
             memory_efficient=True,
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=4,
+            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     return None
@@ -80,34 +75,19 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-def init_imagen(unet_number):
+def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
     imagen = Imagen(
         unets=(
-            unet_generator(1) if unet_number == 1 else FixedNullUnet(),
-            unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+            unet_generator(magnification_level, 1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(magnification_level, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(magnification_level, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
         pred_objectives=("noise", "v", "v"),
-        text_embed_dim=TEXT_EMBED_DIM,
         random_crop_sizes=(None, None, 256),
-    ).cuda()
-
-    #imagen = ElucidatedImagen(
-    #    unets=(
-    #        unet_generator(1) if unet_number == 1 else FixedNullUnet(),
-    #        unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-    #        unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
-    #    ),
-    #    image_sizes=(64, 256, 1024),
-    #    cond_drop_prob=0.1,
-    #    num_sample_steps=(32, 128, 128),
-    #    text_embed_dim=TEXT_EMBED_DIM,
-    #    random_crop_sizes=(None, None, 256),
-    #    sigma_min=0.002,           # min noise level
-    #    sigma_max=(80, 320, 1280), # max noise level, @crowsonkb recommends double the max noise level for upsampler
-    #).cuda()
+        condition_on_text=False,
+    ).to(device)
 
     return imagen
 
@@ -120,10 +100,11 @@ def log_wandb(cur_step, loss, validation=False):
 def main():
     args = parse_args()
     
-    imagen = init_imagen(args.unet_number)
+    imagen = init_imagen(args.magnification_level, args.unet_number)
+    dl_keywords = ('images',) if args.magnification_level == 0 else ('images', 'cond_images')
     trainer = ImagenTrainer(
         imagen=imagen,
-        dl_tuple_output_keywords_names=('images', 'text_embeds', 'cond_images'),
+        dl_tuple_output_keywords_names=dl_keywords,
         fp16=True,
     )
 
@@ -152,25 +133,14 @@ def main():
     patient_labelled_dir = f'{args.data_path}/results.h5'
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024, annotated_dataset=args.annotated_dataset)
-    if args.annotated_dataset:
-        trainer.accelerator.print('Using ANNOTATED dataset for finetuning')
-    else:
-        trainer.accelerator.print('Using UNANNOTATED dataset for initial training')
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level)
+    trainer.accelerator.print('Using UNANNOTATED dataset for magnification level ' + str(args.magnification_level))
 
 
     train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
     indices = list(range(len(dataset)))
     train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
     valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
-
-    for i in range(10):
-        patch, conds, labelmap = train_dataset[i]
-        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
-        for j in range(labelmap.shape[0]):
-            data_masked = np.ma.masked_where(labelmap[j].cpu().numpy() == 0, labelmap[j].cpu().numpy())
-            plt.imshow(data_masked, alpha=0.5, cmap=matplotlib.colors.ListedColormap(np.random.rand(256, 3)))
-        plt.show()
 
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
@@ -217,25 +187,48 @@ def main():
             if trainer.is_main:
                 log_wandb(step_num, loss, validation=True)
 
+        if not (step_num % args.save_freq):
+            trainer.accelerator.wait_for_everyone()
+            unique_path = f"{re.sub(r'.pt$', '', checkpoint_path)}_{step_num}.pt"
+            trainer.accelerator.print("Saving model...")
+            trainer.save(unique_path)
+            trainer.accelerator.print("Saved model under unique name:")
+            
+
         if not (step_num % args.sample_freq):
             trainer.accelerator.wait_for_everyone()
             trainer.accelerator.print()
             trainer.accelerator.print("Saving model and sampling")
 
             if trainer.is_main:
-                lowres_image, conds, labelmap = dataset[0]
-                rand_image, rand_conds, rand_labelmap = dataset[np.random.randint(len(dataset))]
+                lowres_zoomed_image = None
+                rand_zoomed_image = None
+                if args.magnification_level == 0:
+                    lowres_image = dataset[0]
+                    rand_image = dataset[np.random.randint(len(dataset))]
+                else:
+                    lowres_image, lowres_zoomed_image = dataset[0]
+                    rand_image, rand_zoomed_image = dataset[np.random.randint(len(dataset))]
 
                 with torch.no_grad():
-                    images = trainer.sample(
-                        batch_size=2,
-                        return_pil_images=False,
-                        text_embeds=torch.stack([conds, rand_conds]),
-                        start_image_or_video=torch.stack([lowres_image, rand_image]),
-                        start_at_unet_number=args.unet_number,
-                        stop_at_unet_number=args.unet_number,
-                        cond_images=torch.stack([labelmap, rand_labelmap]),
-                    )
+                    if lowres_zoomed_image == None:
+                        images = trainer.sample(
+                            batch_size=2,
+                            return_pil_images=False,
+                            start_image_or_video=torch.stack([lowres_image, rand_image]),
+                            start_at_unet_number=args.unet_number,
+                            stop_at_unet_number=args.unet_number,
+                        )
+                    else:
+                        images = trainer.sample(
+                            batch_size=2,
+                            return_pil_images=False,
+                            start_image_or_video=torch.stack([lowres_image, rand_image]),
+                            start_at_unet_number=args.unet_number,
+                            stop_at_unet_number=args.unet_number,
+                            cond_images=torch.stack([lowres_zoomed_image, rand_zoomed_image]),
+                        )
+
 
                 for index in range(len(images)):
                     T.ToPILImage()(images[index]).save(f'samples/{run_id}/sample-{step_num}-{run_id}-{index}.png')
@@ -254,10 +247,11 @@ def parse_args():
     parser.add_argument('--unet_number', type=int, choices=range(1, 4), help='Unet to train')
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
-    parser.add_argument('--annotated_dataset', action='store_true', help='Train with an annotated dataset')
+    parser.add_argument('--save_freq', type=int, default=50000, help='How many steps between saving a checkpoint under a unique name')
     parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--magnification_level", type=int, choices=range(0, 3))
     return parser.parse_args()
 
 
