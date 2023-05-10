@@ -137,19 +137,6 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
                 else:
                     inpaint_patch[:, :overlap_pos, -overlap_pos:] = above_next_to_patch[:, -overlap_pos:, :overlap_pos]
 
-            # save images to disk
-            #save_image(inpaint_patch, f'samples/inpaint_patch-{idx}.png')
-            #save_image(inpaint_mask, f'samples/inpaint_mask-{idx}.png')
-            #save_image(batch_cond_image[0], f'samples/batch_cond_image-{idx}.png')
-            #if batch_lowres_image is not None:
-            #    save_image(batch_lowres_image, f'samples/batch_lowres_image-{idx}.png')
-            #if above_patch is not None:
-            #    save_image(above_patch, f'samples/above_patch-{idx}.png')
-            #if next_to_patch is not None:
-            #    save_image(next_to_patch, f'samples/next_to_patch-{idx}.png')
-            #if above_next_to_patch is not None:
-            #    save_image(above_next_to_patch, f'samples/above_next_to_patch-{idx}.png')
-            
             inpaint_patch = inpaint_patch.unsqueeze(0).to(device)
             inpaint_mask = inpaint_mask.unsqueeze(0).to(device)
             
@@ -396,20 +383,20 @@ def main():
     args = parse_args()
 
     try:
-        os.makedirs(f"samples")
+        os.makedirs(args.sample_dir)
     except FileExistsError:
         pass
 
     sample_id = uuid4()
 
     mag0_images = generate_image(0, args)
-    save_image(mag0_images[0][0], f'samples/MAG0-{sample_id}.png')
+    save_image(mag0_images[0][0], f'{args.sample_dir}/MAG0-{sample_id}.png')
     
     mag1_full_image = generate_high_res_image(mag0_images[0], 1, args)
-    save_image(mag1_full_image[0], f'samples/MAG1-{sample_id}.png')
+    save_image(mag1_full_image[0], f'{args.sample_dir}/MAG1-{sample_id}.png')
 
     mag2_full_image = generate_high_res_image(mag1_full_image, 2, args)
-    save_image(mag2_full_image[0], f'samples/MAG2-{sample_id}.png')
+    save_image(mag2_full_image[0], f'{args.sample_dir}/MAG2-{sample_id}.png')
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -425,6 +412,7 @@ def parse_args():
     parser.add_argument('--num_gpus', type=int)
     parser.add_argument('--inpaint_resample', type=int)
     parser.add_argument('--overlap', type=float)
+    parser.add_argument('--sample_dir', default="samples", type=str)
     return parser.parse_args()
 
 
