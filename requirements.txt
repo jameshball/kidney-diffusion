@@ -111,7 +111,7 @@ triton==2.0.0
 typing-extensions==4.4.0
 urllib3==1.26.13
 wandb==0.14.0
-Werkzeug==2.2.2
+Werkzeug==2.2.3
 xxhash==3.1.0
 yarl==1.8.2
 zipp==3.11.0
