@@ -67,7 +67,7 @@ packaging==22.0
 pandas==1.5.2
 pathtools==0.1.2
 Pillow==9.3.0
-protobuf==3.20.1
+protobuf==3.20.2
 psutil==5.9.4
 pyarrow==10.0.1
 pyasn1==0.4.8
