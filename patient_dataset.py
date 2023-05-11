@@ -30,10 +30,11 @@ def normalize_creatinine(x):
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False, transformations=True):
         super().__init__()
 
         self.annotated_dataset = annotated_dataset
+        self.transformations = transformations
         self.patch_size = patch_size
         self.image_size = image_size
         self.labels = {'Tubuli': 1, 'Vein': 2, 'Vessel_indeterminate': 2, 'Artery': 3, 'Glomerui': 4}
@@ -161,9 +162,15 @@ class PatientDataset(Dataset):
 
     def __len__(self):
         if self.annotated_dataset:
-            return NUM_FLIPS_ROTATIONS * len(self.train_h5_ids)
+            if self.transformations:
+                return NUM_FLIPS_ROTATIONS * len(self.train_h5_ids)
+            else:
+                return len(self.train_h5_ids)
         else:
-            return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_train_patches
+            if self.transformations:
+                return NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS * self.num_train_patches
+            else:
+                return self.num_train_patches
 
     def index_to_slide(self, index):
         for i in range(len(self.train_slide_ids)):
@@ -177,7 +184,11 @@ class PatientDataset(Dataset):
         labelmap = np.zeros((1024, 1024, len(set(self.labels.values()))))
 
         if self.annotated_dataset:
-            patch_index = index // NUM_FLIPS_ROTATIONS
+            if self.transformations:
+                patch_index = index // NUM_FLIPS_ROTATIONS
+            else:
+                patch_index = index
+            
             if self.train_h5_ids[patch_index] in self.slide_name_to_index:
                 slide_index = self.slide_name_to_index[self.train_h5_ids[patch_index].split(" ")[0]] 
             else:
@@ -195,10 +206,19 @@ class PatientDataset(Dataset):
                         mask = np.array(h5[self.train_h5_ids[patch_index]].get(labelname))
                         labelmap[mask > 0, self.labels[labelname] - 1] = 1
         else:
-            slide_index, patch_position = self.index_to_slide(index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS))
+            if self.transformations:
+                patch_index = index // (NUM_FLIPS_ROTATIONS * NUM_TRANSLATIONS)
+            else:
+                patch_index = index
+            
+            slide_index, patch_position = self.index_to_slide(patch_index)
             slide = slideio.open_slide(self.svs_dir + self.train_slide_ids[slide_index] + ".svs", "SVS").get_scene(0)
 
-            translation_index = index // NUM_FLIPS_ROTATIONS
+            if self.transformations:
+                translation_index = index // NUM_FLIPS_ROTATIONS
+            else:
+                translation_index = 0
+            
             if translation_index % NUM_TRANSLATIONS == 0:
                 x, y = (patch_position[0], patch_position[1])
             elif translation_index % NUM_TRANSLATIONS == 1:
@@ -236,7 +256,7 @@ class PatientDataset(Dataset):
         conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float()
 
         # Rotate and flip the patch
-        if index % NUM_FLIPS_ROTATIONS == 0:
+        if index % NUM_FLIPS_ROTATIONS == 0 or not self.transformations:
             return patch, conds, labelmap
         elif index % NUM_FLIPS_ROTATIONS == 1:
             return patch.flip(2), conds, labelmap.flip(2)

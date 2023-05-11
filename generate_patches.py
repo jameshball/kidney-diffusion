@@ -1,8 +1,4 @@
-import numpy as np
-
-from matplotlib import pyplot as plt, cm
 import torchvision.transforms as T
-from torch.utils.data import DataLoader
 
 from patient_dataset import PatientDataset
 import os
@@ -10,7 +6,6 @@ import pandas as pd
 from glob import glob
 
 import re
-import gc
 import argparse
 
 from tqdm import tqdm
@@ -61,7 +56,7 @@ def main():
     except FileExistsError:
         pass
 
-    result = Parallel(n_jobs=64)(delayed(save_file)(args, dataset, i) for i in tqdm(range(len(dataset))))
+    result = Parallel(n_jobs=16)(delayed(save_file)(args, dataset, i) for i in tqdm(range(len(dataset))))
 
 
 def parse_args():
