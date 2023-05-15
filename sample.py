@@ -16,7 +16,7 @@ from glob import glob
 
 import re
 
-BATCH_SIZES = [128, 64, 4]
+BATCH_SIZES = [128, 64, 6]
 
 def generate_images(unet_number, args, lowres_images=None):
     imagen = init_imagen(unet_number)
@@ -64,7 +64,7 @@ def generate_images(unet_number, args, lowres_images=None):
             all_images.append(images)
         else:
             for image in images:
-                image.save(f'samples/{args.folder_name}/inference-{uuid4()}.png')
+                image.save(f'{args.folder_name}/inference-{uuid4()}.png')
 
     del trainer
     del imagen
@@ -84,7 +84,7 @@ def main():
     args = parse_args()
 
     try:
-        os.makedirs(f"samples/{args.folder_name}")
+        os.makedirs(f"{args.folder_name}")
     except FileExistsError:
         pass
 
