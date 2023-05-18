@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.data import Subset, DataLoader
 import torchvision.transforms as T
 
-from ultra_res_patient_dataset import PatientDataset
+from patient_dataset import PatientDataset
 import os
 import pandas as pd
 from glob import glob
@@ -21,42 +21,43 @@ import re
 import gc
 
 
+TEXT_EMBED_DIM = 3
 SPLIT_VALID_FRACTION = 0.025
 
 
-def unet_generator(magnification_level, unet_number):
+def unet_generator(unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
-            dim_mults=(1, 2, 3, 4),
+            dim_mults=(1, 2, 4, 8),
+            cond_dim=512,
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
-            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     if unet_number == 2:
         return Unet(
             dim=128,
+            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
             num_resnet_blocks=2,
             memory_efficient=True,
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if magnification_level > 0 else 0,
         )
     
     if unet_number == 3:
         return Unet(
             dim=128,
+            cond_dim=512,
             dim_mults=(1, 2, 4, 8),
-            num_resnet_blocks=(2, 4, 6, 8),
+            num_resnet_blocks=(2, 4, 4, 4),
             memory_efficient=True,
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if magnification_level > 0 else 0,
         )
 
     return None
@@ -75,19 +76,19 @@ class FixedNullUnet(NullUnet):
         return x
 
 
-def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
+def init_imagen(unet_number):
     imagen = Imagen(
+        condition_on_text = False,
         unets=(
-            unet_generator(magnification_level, 1) if unet_number == 1 else FixedNullUnet(),
-            unet_generator(magnification_level, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
-            unet_generator(magnification_level, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+            unet_generator(1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
-        pred_objectives=("noise", "v", "v"),
+        pred_objectives=("noise", "noise", "noise"),
         random_crop_sizes=(None, None, 256),
-        condition_on_text=False,
-    ).to(device)
+    ).cuda()
 
     return imagen
 
@@ -100,11 +101,10 @@ def log_wandb(cur_step, loss, validation=False):
 def main():
     args = parse_args()
     
-    imagen = init_imagen(args.magnification_level, args.unet_number)
-    dl_keywords = ('images',) if args.magnification_level == 0 else ('images', 'cond_images')
+    imagen = init_imagen(args.unet_number)
     trainer = ImagenTrainer(
         imagen=imagen,
-        dl_tuple_output_keywords_names=dl_keywords,
+        dl_tuple_output_keywords_names=('images',),
         fp16=True,
     )
 
@@ -133,8 +133,11 @@ def main():
     patient_labelled_dir = f'{args.data_path}/results.h5'
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level)
-    trainer.accelerator.print('Using UNANNOTATED dataset for magnification level ' + str(args.magnification_level))
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, patch_size=1024, image_size=1024, annotated_dataset=args.annotated_dataset, unconditional=True)
+    if args.annotated_dataset:
+        trainer.accelerator.print('Using ANNOTATED dataset for finetuning')
+    else:
+        trainer.accelerator.print('Using UNANNOTATED dataset for initial training')
 
 
     train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
@@ -144,6 +147,10 @@ def main():
 
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
+    for i in range(10):
+        patch = train_dataset[i]
+        plt.imshow(patch.permute(1, 2, 0).cpu().numpy())
+        plt.show()
 
     trainer.add_train_dataset(train_dataset, batch_size=8, num_workers=args.num_workers)
     trainer.add_valid_dataset(valid_dataset, batch_size=8, num_workers=args.num_workers)
@@ -193,7 +200,6 @@ def main():
             trainer.accelerator.print("Saving model...")
             trainer.save(unique_path)
             trainer.accelerator.print("Saved model under unique name:")
-            
 
         if not (step_num % args.sample_freq):
             trainer.accelerator.wait_for_everyone()
@@ -201,34 +207,17 @@ def main():
             trainer.accelerator.print("Saving model and sampling")
 
             if trainer.is_main:
-                lowres_zoomed_image = None
-                rand_zoomed_image = None
-                if args.magnification_level == 0:
-                    lowres_image = dataset[0]
-                    rand_image = dataset[np.random.randint(len(dataset))]
-                else:
-                    lowres_image, lowres_zoomed_image = dataset[0]
-                    rand_image, rand_zoomed_image = dataset[np.random.randint(len(dataset))]
+                lowres_image = dataset[0]
+                rand_image = dataset[np.random.randint(len(dataset))]
 
                 with torch.no_grad():
-                    if lowres_zoomed_image == None:
-                        images = trainer.sample(
-                            batch_size=2,
-                            return_pil_images=False,
-                            start_image_or_video=torch.stack([lowres_image, rand_image]),
-                            start_at_unet_number=args.unet_number,
-                            stop_at_unet_number=args.unet_number,
-                        )
-                    else:
-                        images = trainer.sample(
-                            batch_size=2,
-                            return_pil_images=False,
-                            start_image_or_video=torch.stack([lowres_image, rand_image]),
-                            start_at_unet_number=args.unet_number,
-                            stop_at_unet_number=args.unet_number,
-                            cond_images=torch.stack([lowres_zoomed_image, rand_zoomed_image]),
-                        )
-
+                    images = trainer.sample(
+                        batch_size=2,
+                        return_pil_images=False,
+                        start_image_or_video=torch.stack([lowres_image, rand_image]),
+                        start_at_unet_number=args.unet_number,
+                        stop_at_unet_number=args.unet_number,
+                    )
 
                 for index in range(len(images)):
                     T.ToPILImage()(images[index]).save(f'samples/{run_id}/sample-{step_num}-{run_id}-{index}.png')
@@ -248,10 +237,11 @@ def parse_args():
     parser.add_argument('--data_path', type=str, help='Path of training dataset')
     parser.add_argument('--sample_freq', type=int, default=500, help='How many epochs between sampling and checkpoint.pt saves')
     parser.add_argument('--save_freq', type=int, default=50000, help='How many steps between saving a checkpoint under a unique name')
+    parser.add_argument('--annotated_dataset', action='store_true', help='Train with an annotated dataset')
     parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--magnification_level", type=int, choices=range(0, 3))
+    parser.add_argument('--unconditional', action='store_true')
     return parser.parse_args()
 
 

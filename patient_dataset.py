@@ -30,11 +30,12 @@ def normalize_creatinine(x):
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False, transformations=True):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False, transformations=True, unconditional=False):
         super().__init__()
 
         self.annotated_dataset = annotated_dataset
         self.transformations = transformations
+        self.unconditional = unconditional
         self.patch_size = patch_size
         self.image_size = image_size
         self.labels = {'Tubuli': 1, 'Vein': 2, 'Vessel_indeterminate': 2, 'Artery': 3, 'Glomerui': 4}
@@ -235,41 +236,62 @@ class PatientDataset(Dataset):
 
         labelmap = torch.from_numpy(labelmap).permute((2, 0, 1)).float()
 
-        if slide_index == -1:
-            # arbitrary defaults
-            final_outcome = 0
-            num_days_post_transplant = 0.5
-            avg_creatinine = 0.2
-        else:
-            patient_id = self.patient_outcomes.iloc[slide_index]["patient_UUID"]
-
-            # Get data about the patient's outcome
-            num_days_post_transplant = self.patient_outcomes.iloc[slide_index]["time_post_transplant"]
-            final_outcome = self.patient_outcomes.iloc[slide_index]["final_outcome"]
-            if patient_id in self.creatinine_avg:
-                avg_creatinine = self.creatinine_avg[patient_id]
+        if self.unconditional:
+            # Rotate and flip the patch
+            if index % NUM_FLIPS_ROTATIONS == 0 or not self.transformations:
+                return patch
+            elif index % NUM_FLIPS_ROTATIONS == 1:
+                return patch.flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 2:
+                return patch.flip(1)
+            elif index % NUM_FLIPS_ROTATIONS == 3:
+                return patch.flip(1).flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 4:
+                return patch.transpose(1, 2)
+            elif index % NUM_FLIPS_ROTATIONS == 5:
+                return patch.transpose(1, 2).flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 6:
+                return patch.transpose(1, 2).flip(1)
             else:
-                # default healthy
-                avg_creatinine = 0.2
-
-        # Convert conditions to tensor
-        conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float()
-
-        # Rotate and flip the patch
-        if index % NUM_FLIPS_ROTATIONS == 0 or not self.transformations:
-            return patch, conds, labelmap
-        elif index % NUM_FLIPS_ROTATIONS == 1:
-            return patch.flip(2), conds, labelmap.flip(2)
-        elif index % NUM_FLIPS_ROTATIONS == 2:
-            return patch.flip(1), conds, labelmap.flip(1)
-        elif index % NUM_FLIPS_ROTATIONS == 3:
-            return patch.flip(1).flip(2), conds, labelmap.flip(1).flip(2)
-        elif index % NUM_FLIPS_ROTATIONS == 4:
-            return patch.transpose(1, 2), conds, labelmap.transpose(1, 2)
-        elif index % NUM_FLIPS_ROTATIONS == 5:
-            return patch.transpose(1, 2).flip(2), conds, labelmap.transpose(1, 2).flip(2)
-        elif index % NUM_FLIPS_ROTATIONS == 6:
-            return patch.transpose(1, 2).flip(1), conds, labelmap.transpose(1, 2).flip(1)
+                return patch.transpose(1, 2).flip(1).flip(2)
         else:
-            return patch.transpose(1, 2).flip(1).flip(2), conds, labelmap.transpose(1, 2).flip(1).flip(2)
+            if slide_index == -1:
+                # arbitrary defaults
+                final_outcome = 0
+                num_days_post_transplant = 0.5
+                avg_creatinine = 0.2
+            else:
+                patient_id = self.patient_outcomes.iloc[slide_index]["patient_UUID"]
+
+                # Get data about the patient's outcome
+                num_days_post_transplant = self.patient_outcomes.iloc[slide_index]["time_post_transplant"]
+                final_outcome = self.patient_outcomes.iloc[slide_index]["final_outcome"]
+                if patient_id in self.creatinine_avg:
+                    avg_creatinine = self.creatinine_avg[patient_id]
+                else:
+                    # default healthy
+                    avg_creatinine = 0.2
+
+            # Convert conditions to tensor
+            conds = torch.tensor([final_outcome, num_days_post_transplant, avg_creatinine]).reshape(1, 3).float()
+
+            # Rotate and flip the patch
+            if index % NUM_FLIPS_ROTATIONS == 0 or not self.transformations:
+                return patch, conds, labelmap
+            elif index % NUM_FLIPS_ROTATIONS == 1:
+                return patch.flip(2), conds, labelmap.flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 2:
+                return patch.flip(1), conds, labelmap.flip(1)
+            elif index % NUM_FLIPS_ROTATIONS == 3:
+                return patch.flip(1).flip(2), conds, labelmap.flip(1).flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 4:
+                return patch.transpose(1, 2), conds, labelmap.transpose(1, 2)
+            elif index % NUM_FLIPS_ROTATIONS == 5:
+                return patch.transpose(1, 2).flip(2), conds, labelmap.transpose(1, 2).flip(2)
+            elif index % NUM_FLIPS_ROTATIONS == 6:
+                return patch.transpose(1, 2).flip(1), conds, labelmap.transpose(1, 2).flip(1)
+            else:
+                return patch.transpose(1, 2).flip(1).flip(2), conds, labelmap.transpose(1, 2).flip(1).flip(2)
+
+
 
