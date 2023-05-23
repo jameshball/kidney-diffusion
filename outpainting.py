@@ -1,100 +1,275 @@
 from uuid import uuid4
-import argparse
 
-import matplotlib.pyplot as plt
 import torch
-from imagen_pytorch import ImagenTrainer, Imagen, Unet
-from torchvision.transforms import transforms
-from tqdm import tqdm
+import torch.multiprocessing as mp
+import torch.nn.functional as F
+import argparse
+import math
+from skimage import color
+import cv2
+import numpy as np
 
-from train import init_imagen, CHECKPOINT_PATH
-from patient_dataset import normalize_patient_outcomes, normalize_time_post_transplant, normalize_creatinine, OUTCOMES
+from imagen_pytorch.trainer import restore_parts
+from imagen_pytorch.version import __version__
+from packaging import version
+from torchvision.utils import save_image
+import torchvision.transforms as transforms
+
+from train_uncond import init_imagen
+
+import os
+import gc
+
+from fsspec.core import url_to_fs
+import warnings
+
+# used to ignore CUDA warnings that clog stdout
+# REMOVE if there are CUDA errors other than those expected
+warnings.filterwarnings("ignore", category=UserWarning)
+
+PATCH_SIZE = 1024
+PATCH_SIZES = {1: 64, 2: 256, 3: 1024}
+BATCH_SIZES = [128, 64, 6]
+FILL_COLOR = 0.95
 
 
-IMAGE_SIZE = 64
+def load_model(unet_number, device, args):
+    imagen = init_imagen(unet_number).to(device)
+
+    checkpoint_name = f"unet{unet_number}"
+    path = vars(args)[checkpoint_name]
+
+    fs, _ = url_to_fs(path)
+
+    with fs.open(path) as f:
+        loaded_obj = torch.load(f, map_location='cpu')
+
+        if version.parse(__version__) != version.parse(loaded_obj['version']):
+            print(f'loading saved imagen at version {loaded_obj["version"]}, but current package version is {__version__}')
+
+    try:
+        imagen.load_state_dict(loaded_obj['model'], strict=True)
+    except RuntimeError:
+        print("Failed loading state dict. Trying partial load")
+        imagen.load_state_dict(restore_parts(imagen.state_dict(), loaded_obj['model']))
+    
+    return imagen
+
+
+def print_memory_usage(rank):
+    t = torch.cuda.get_device_properties(0).total_memory
+    r = torch.cuda.memory_reserved(0)
+    a = torch.cuda.memory_allocated(0)
+    print(f"cuda:{rank} total memory: {t}, reserverd memory: {r}, allocated memory: {a}, free memory: {r-a}")
+
+
+def generate_image_distributed(rank, unet_number, args, in_queue, out_queue, patches_generated, overlap, orientation, patch_pos, num_patches_width):
+    device = torch.device(f"cuda:{rank}")
+    print(f"started process on {device}")
+
+    imagen = load_model(unet_number, device, args)
+
+    while True:
+        item = in_queue.get()
+        if item is None:
+            break
+        idx, batch_lowres_image, pos = item
+        
+        inpaint_patch = None
+        inpaint_mask = None
+
+        # need to check if patch above, next to, and above and next to this patch have been generated
+        # if they have, then we can generate this patch
+        if pos is not None:
+            i, j = pos
+
+            above_patch = None
+            next_to_patch = None
+            above_next_to_patch = None
+
+            above = (i - 1, j)
+            above_idx = -1 if above not in patch_pos else patch_pos.index(above)
+            next_to = (i, j + orientation)
+            next_to_idx = -1 if next_to not in patch_pos else patch_pos.index(next_to)
+            above_next_to = (i - 1, j + orientation)
+            above_next_to_idx = -1 if above_next_to not in patch_pos else patch_pos.index(above_next_to)
+            above_exists = above_idx in patches_generated or above not in patch_pos
+            next_to_exists = next_to_idx in patches_generated or next_to not in patch_pos
+            above_next_to_exists = above_next_to_idx in patches_generated or above_next_to not in patch_pos
+
+            unet_patch_size = PATCH_SIZES[unet_number]
+
+            if above_exists and next_to_exists and above_next_to_exists:
+                if above_idx in patches_generated:
+                    above_patch = patches_generated[above_idx][0]
+                if next_to_idx in patches_generated:
+                    next_to_patch = patches_generated[next_to_idx][0]
+                if above_next_to_idx in patches_generated:
+                    above_next_to_patch = patches_generated[above_next_to_idx][0]
+            else:
+                in_queue.put((idx, batch_lowres_image, pos))
+                continue
+
+            print(f"generating patch at {pos} which is index {idx}", flush=True)
+
+            # inpaint_patch is the patch that will be generated with above, next_to, and above_next_to patches
+            # already generated. They need to be added to the inpaint_patch in the correct positions
+            inpaint_patch = torch.zeros(3, unet_patch_size, unet_patch_size)
+            inpaint_mask = torch.zeros(unet_patch_size, unet_patch_size)
+            overlap_pos = int(overlap * unet_patch_size)
+            
+            # if we are at the top of the image, then above_patch is None
+            # if we are at the left/right of the image, then next_to_patch is None
+            # if we are at the top left/right of the image, then above_next_to_patch is None#
+            if above_patch is not None:
+                inpaint_patch[:, :overlap_pos, :] = above_patch[:, -overlap_pos:, :]
+                inpaint_mask[:overlap_pos, :] = 1
+            if next_to_patch is not None:
+                if orientation == -1:
+                    inpaint_patch[:, :, :overlap_pos] = next_to_patch[:, :, -overlap_pos:]
+                    inpaint_mask[:, :overlap_pos] = 1
+                else:
+                    inpaint_patch[:, :, -overlap_pos:] = next_to_patch[:, :, :overlap_pos]
+                    inpaint_mask[:, -overlap_pos:] = 1
+            if above_next_to_patch is not None:
+                if orientation == -1:
+                    inpaint_patch[:, :overlap_pos, :overlap_pos] = above_next_to_patch[:, -overlap_pos:, -overlap_pos:]
+                else:
+                    inpaint_patch[:, :overlap_pos, -overlap_pos:] = above_next_to_patch[:, -overlap_pos:, :overlap_pos]
+
+            inpaint_patch = inpaint_patch.unsqueeze(0).to(device)
+            inpaint_mask = inpaint_mask.unsqueeze(0).to(device)
+            
+        if batch_lowres_image != None:
+            batch_lowres_image = batch_lowres_image.to(device)
+
+        batch_image = imagen.sample(
+            batch_size=1,
+            return_pil_images=False,
+            start_image_or_video=batch_lowres_image,
+            start_at_unet_number=unet_number,
+            stop_at_unet_number=unet_number,
+            inpaint_images=inpaint_patch,
+            inpaint_masks=inpaint_mask,
+            inpaint_resample_times=args.inpaint_resample,
+            use_tqdm=False,
+            device=device,
+        )
+            
+
+        patches_generated[idx] = batch_image.cpu()
+        out_queue.put((idx,))
+
+        if pos is not None:
+            print(f"{len(patches_generated)}/{len(patch_pos)} patches generated", flush=True)
+
+
+    del imagen
+    del batch_lowres_image
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def generate_image_with_unet(unet_number, args, lowres_image, overlap, orientation, num_patches_width):
+    in_queue = mp.Queue()
+    out_queue = mp.Queue()
+    patches_generated = mp.Manager().dict()
+    processes = []
+
+    num_images = num_patches_width * num_patches_width
+    patch_pos = [(i, j) for i in range(num_patches_width) for j in range(num_patches_width)]
+
+    print(f"Generating {num_images} images for unet {unet_number}")
+
+    images = []
+    for idx in range(num_images):
+        # Extract the corresponding batch and call trainer.sample()
+        idx_lowres_image = None if lowres_image is None else lowres_image[idx]
+        pos = None if patch_pos is None else patch_pos[idx]
+
+        in_queue.put((idx, idx_lowres_image, pos))
+
+    num_processes = min(args.num_gpus, num_images)
+
+    for rank in range(num_processes):
+        p = mp.Process(target=generate_image_distributed, args=(rank, unet_number, args, in_queue, out_queue, patches_generated, overlap, orientation, patch_pos, num_patches_width))
+        p.start()
+        processes.append(p)
+
+    for _ in range(num_images):
+        out_queue.get()
+
+    for _ in range(num_processes):
+        in_queue.put(None)
+
+    for p in processes:
+        p.join()
+
+    images = [patches_generated[idx] for idx in range(num_images)]
+
+    if lowres_image is not None:
+        del lowres_image
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return images
+
+
+def generate_image(args, overlap=0.25, orientation=-1, num_patches_width=1):
+    lowres_image = generate_image_with_unet(1, args, None, overlap, orientation, num_patches_width)
+    medres_image = generate_image_with_unet(2, args, lowres_image, overlap, orientation, num_patches_width)
+    highres_image = generate_image_with_unet(3, args, medres_image, overlap, orientation, num_patches_width)
+
+    return highres_image
+
+
+def generate_high_res_image(args):
+    num_patches_width = args.num_patches_width
+    orientation = -1
+    images = generate_image(args, overlap=args.overlap, orientation=orientation, num_patches_width=num_patches_width)
+
+    patch_dist = int(PATCH_SIZE * (1 - args.overlap))
+    full_image_width = PATCH_SIZE + (num_patches_width - 1) * patch_dist
+    full_image = torch.zeros(1, 3, full_image_width, full_image_width)
+    patch_pos = [(i, j) for i in range(num_patches_width) for j in range(num_patches_width)]
+
+    for index, (i, j) in enumerate(patch_pos):
+        y = i * patch_dist
+        x = j * patch_dist
+
+        full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = images[index][0]
+
+    return full_image
 
 
 def main():
     args = parse_args()
-    print(args.height, args.width)
 
-    unet1 = Unet(
-        dim=128,
-        dim_mults=(1, 2, 4, 8),
-        cond_dim=512,
-        text_embed_dim=3,
-        num_resnet_blocks=3,
-        layer_attns=(False, True, True, True),
-        layer_cross_attns=False
-    )
+    try:
+        os.makedirs(args.sample_dir)
+    except FileExistsError:
+        pass
 
-    imagen = Imagen(
-        unets=unet1,
-        image_sizes=64,
-        timesteps=1000,
-        text_embed_dim=3,
-    )
+    sample_id = uuid4()
 
-    trainer = ImagenTrainer(
-        imagen=imagen,
-    ).cuda()
-
-    trainer.load(args.checkpoint)
-
-    # Normalize the outcomes
-    outcomes = normalize_patient_outcomes(args.outcomes)
-    time_post_transplant = normalize_time_post_transplant(args.time_post_transplant)
-    creatinine = normalize_creatinine(args.creatinine)
-
-    conds = torch.tensor([outcomes, time_post_transplant, creatinine]).reshape(1, 1, 3).float().cuda()
-
-    # Initialise blank image
-    image = torch.full((3, args.height, args.width), -1).float().cuda()
-    image_name = uuid4()
-
-    ys = range(0, args.height - IMAGE_SIZE // 2, IMAGE_SIZE // 2)
-    xs = range(0, args.width - IMAGE_SIZE // 2, IMAGE_SIZE // 2)
-    patch_positions = [(y, x) for y in ys for x in xs]
-
-    for y, x in tqdm(patch_positions, desc="Generating image"):
-        inpaint_patch = image[:, y:y+IMAGE_SIZE, x:x+IMAGE_SIZE]
-        inpaint_mask = (inpaint_patch != -1)[0, :, :].float()
-        inpaint_patch[inpaint_patch == -1] = 0
-        plt.imshow(inpaint_patch.permute(1, 2, 0).cpu().numpy())
-        plt.show()
-        plt.imshow(inpaint_mask.cpu().numpy())
-        plt.show()
-
-        inpaint_resample_times = 1 if y == 0 and x == 0 else args.resample_times
-
-        patch = trainer.sample(
-            batch_size=1,
-            text_embeds=conds,
-            inpaint_images=inpaint_patch.unsqueeze(0),
-            inpaint_masks=inpaint_mask.unsqueeze(0),
-            inpaint_resample_times=inpaint_resample_times,
-            cond_scale=5.,
-            use_tqdm=False,
-        )
-        plt.imshow(patch[0].permute(1, 2, 0).cpu().numpy())
-        plt.show()
-        image[:, y:y+IMAGE_SIZE, x:x+IMAGE_SIZE] = patch
-
-    image = transforms.ToPILImage()(image)
-    image.save(f'samples/inference-{image_name}.png')
+    full_image = generate_high_res_image(args)
+    save_image(full_image[0], f'{args.sample_dir}/outpainting-{sample_id}.png')
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default=CHECKPOINT_PATH, help='Path to checkpoint')
-    parser.add_argument('--width', type=int, default=64, choices=range(64, 1025), help='Width of image')
-    parser.add_argument('--height', type=int, default=64, choices=range(64, 1025), help='Height of image')
-    parser.add_argument('--outcomes', type=str, default='Functioning', choices=OUTCOMES, help='Outcome to predict')
-    parser.add_argument('--time_post_transplant', type=int, default=90, choices=range(90, 456), help='Number of days the biopsy was taken after transplant')
-    parser.add_argument('--creatinine', type=float, default=70, choices=range(30, 2080), help='Average creatinine level between transplant and biopsy')
-    parser.add_argument('--resample_times', type=int, default=1, choices=range(1, 11), help='Number of times to resample the image when inpainting')
+    parser.add_argument('--unet1', type=str)
+    parser.add_argument('--unet2', type=str)
+    parser.add_argument('--unet3', type=str)
+    parser.add_argument('--num_gpus', type=int)
+    parser.add_argument('--inpaint_resample', type=int)
+    parser.add_argument('--num_patches_width', type=int)
+    parser.add_argument('--overlap', type=float)
+    parser.add_argument('--sample_dir', default="samples", type=str)
     return parser.parse_args()
 
 
 if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('spawn')
     main()
