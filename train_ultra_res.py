@@ -105,7 +105,9 @@ def main():
     trainer = ImagenTrainer(
         imagen=imagen,
         dl_tuple_output_keywords_names=dl_keywords,
-        fp16=True,
+        fp16=False,
+        # doing this to try and avoid nan
+        max_grad_norm=1,
     )
 
     # Load the patient outcomes
