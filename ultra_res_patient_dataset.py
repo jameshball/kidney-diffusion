@@ -6,6 +6,8 @@ import pandas as pd
 import torch
 from matplotlib import pyplot as plt
 from torch.utils.data import Dataset
+import torchvision.transforms as T
+import torch.nn.functional as F
 import slideio
 from tqdm import tqdm
 from skimage import color
@@ -18,10 +20,11 @@ FILL_COLOR = (242, 243, 242)
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, magnification_level, verbose=False):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, magnification_level, verbose=False, center_cond=False):
         super().__init__()
 
         self.patch_size = 1024
+        self.center_cond = center_cond
         self.magnification_level = magnification_level
         self.h5_path = h5_path
         self.labels = {'Tubuli': 1, 'Vein': 2, 'Vessel_indeterminate': 2, 'Artery': 3, 'Glomerui': 4}
@@ -244,9 +247,20 @@ class PatientDataset(Dataset):
 
 
     def __getitem__(self, index):
+        # size of higher mag patch within the zoomed_patch (once a center crop is made)
+        patch_width = int(MAG_LEVEL_SIZES[self.magnification_level] * self.patch_size / MAG_LEVEL_SIZES[self.magnification_level - 1])
+        
         if self.magnification_level > 0:
             patch, zoomed_patch = self.read_block_and_zoomed(index)
-            return self.flip_rotate_patch(index, patch), self.flip_rotate_patch(index, zoomed_patch)
+            patch = self.flip_rotate_patch(index, patch)
+            zoomed_patch = self.flip_rotate_patch(index, zoomed_patch)
+            if self.center_cond:
+                center_patch = T.CenterCrop(patch_width)(zoomed_patch)
+                center_patch = F.interpolate(center_patch.unsqueeze(0), zoomed_patch.shape[-1], mode='nearest').squeeze(0)
+                cond_image = torch.cat((zoomed_patch, center_patch), 0)
+                return patch, cond_image
+            else:
+                return patch, zoomed_patch
         else:
             patch = self.read_block_mag_zero(index)
             return self.flip_rotate_patch(index, patch)

@@ -242,7 +242,7 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
     else:
         path = pathlib.Path(path)
         files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('*.{}'.format(ext))])
+                       for file in path.rglob('*.{}'.format(ext))])
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers)
 

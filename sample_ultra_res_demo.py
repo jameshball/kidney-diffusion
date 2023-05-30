@@ -114,7 +114,9 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             space_above = i != 0
             space_next_to = (orientation == 1 and j < num_patches_width - 1) or (orientation == -1 and j > 0)
 
-            if above_exists and next_to_exists and above_next_to_exists:
+            if i > 1 or j > 1:
+                continue
+            elif above_exists and next_to_exists and above_next_to_exists:
                 if above_idx in patches_generated:
                     above_patch = patches_generated[above_idx][0]
                 elif space_above:            
@@ -163,6 +165,16 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
 
             inpaint_patch = inpaint_patch.unsqueeze(0).to(device)
             inpaint_mask = inpaint_mask.unsqueeze(0).to(device)
+
+            save_image(inpaint_patch[0].cpu(), f"{args.sample_dir}/{uuid4()}_inpaint_patch_{pos}.png")
+            save_image(inpaint_mask[0].cpu(), f"{args.sample_dir}/{uuid4()}_inpaint_mask_{pos}.png")
+            save_image(cond_image.cpu(), f"{args.sample_dir}/{uuid4()}_cond_image_{pos}.png")
+            if above_patch is not None:
+                save_image(above_patch.cpu(), f"{args.sample_dir}/{uuid4()}_above_patch_{pos}.png")
+            if next_to_patch is not None:
+                save_image(next_to_patch.cpu(), f"{args.sample_dir}/{uuid4()}_next_to_patch_{pos}.png")
+            if above_next_to_patch is not None:
+                save_image(above_next_to_patch.cpu(), f"{args.sample_dir}/{uuid4()}_above_next_to_patch_{pos}.png")
             
         if cond_image != None:
             cond_image = cond_image.unsqueeze(0).to(device)
@@ -182,6 +194,8 @@ def generate_image_distributed(rank, mag_level, unet_number, args, in_queue, out
             use_tqdm=False,
             device=device,
         )
+
+        save_image(batch_image[0].cpu(), f"{args.sample_dir}/{uuid4()}_patch_{pos}.png")
             
         if pos is not None:
             print(f"{len(patches_generated)}/{len(patch_pos)} patches generated", flush=True)
@@ -212,6 +226,8 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image, cond_im
 
     images = []
     for idx in range(num_cond_images):
+        if lowres_image is not None and lowres_image[idx] is None:
+            continue
         # Extract the corresponding batch of cond_images and call trainer.sample()
         idx_cond_image = None if cond_image is None else cond_image[idx]
         idx_lowres_image = None if lowres_image is None else lowres_image[idx]
@@ -226,7 +242,7 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image, cond_im
         p.start()
         processes.append(p)
 
-    for _ in range(num_cond_images):
+    for _ in range(4 if mag_level == 1 else 1):
         out_queue.get()
 
     for _ in range(num_processes):
@@ -235,7 +251,7 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image, cond_im
     for p in processes:
         p.join()
 
-    images = [patches_generated[idx] for idx in range(num_cond_images)]
+    images = [(patches_generated[idx] if idx in patches_generated else None) for idx in range(num_cond_images)]
 
     if cond_image is not None:
         del cond_image
@@ -248,18 +264,12 @@ def generate_image_with_unet(mag_level, unet_number, args, lowres_image, cond_im
     return images
 
 
-def generate_image(mag_level, args, cond_image=None, patch_pos=None, overlap=0.25, orientation=-1, num_patches_width=1, lowres_image=None):
-    if lowres_image is None:
-        lowres_image = generate_image_with_unet(mag_level, 1, args, None, cond_image, patch_pos, overlap, orientation, num_patches_width)
+def generate_image(mag_level, args, cond_image=None, patch_pos=None, overlap=0.25, orientation=-1, num_patches_width=1):
+    lowres_image = generate_image_with_unet(mag_level, 1, args, None, cond_image, patch_pos, overlap, orientation, num_patches_width)
     medres_image = generate_image_with_unet(mag_level, 2, args, lowres_image, cond_image, patch_pos, overlap, orientation, num_patches_width)
     highres_image = generate_image_with_unet(mag_level, 3, args, medres_image, cond_image, patch_pos, overlap, orientation, num_patches_width)
 
     return highres_image
-
-
-def get_patch_width(mag_level):
-    # patch size of a mag1 image within the generated mag0 image
-    return int(MAG_LEVEL_SIZES[mag_level] * PATCH_SIZE / MAG_LEVEL_SIZES[mag_level - 1])
 
 
 # mag0 images represent 40000x40000 patches, but are 1024x1024
@@ -284,7 +294,8 @@ def get_patch_width(mag_level):
 # generate for mag2, then get a PATCH_SIZE crop around that area in
 # the mag1 full scale image
 def get_cond_images(zoomed_image, mag_level, overlap=0.25):
-    patch_width = get_patch_width(mag_level)
+    # patch size of a mag1 image within the generated mag0 image
+    patch_width = int(MAG_LEVEL_SIZES[mag_level] * PATCH_SIZE / MAG_LEVEL_SIZES[mag_level - 1])
 
     patch_dist = int(patch_width * (1 - overlap))
     zoomed_image_width = zoomed_image.shape[3]
@@ -379,38 +390,13 @@ def get_next_patches(patches, orientation):
 
 def generate_high_res_image(zoomed_image, mag_level, args):
     cond_images, patch_pos, num_patches_width = get_cond_images(zoomed_image, mag_level, overlap=args.overlap)
-    patch_width = get_patch_width(mag_level)
-    if args.ignore_unet_1:
-        lowres_image = [transforms.CenterCrop(patch_width)(cond_image).unsqueeze(0) for cond_image in cond_images]
-    else:
-        lowres_image = None
 
     num_top_left_patches = len(get_next_patches(patch_pos, -1)[0])
     num_top_right_patches = len(get_next_patches(patch_pos, 1)[0])
 
-    orientation = -1 if num_top_left_patches > num_top_right_patches else 1
+    orientation = -1 if num_top_left_patches >= num_top_right_patches else 1
 
-    mag_images = generate_image(mag_level, args, cond_image=cond_images, patch_pos=patch_pos, overlap=args.overlap, orientation=orientation, num_patches_width=num_patches_width, lowres_image=lowres_image)
-
-    patch_dist = int(PATCH_SIZE * (1 - args.overlap))
-    full_image_width = PATCH_SIZE + (num_patches_width - 1) * patch_dist
-    print("generate high res image details:")
-    print("full_image_width", full_image_width)
-    print("patch_dist", patch_dist)
-    print("num_patches_width", num_patches_width)
-    print("mag_images size", len(mag_images))
-    print("", flush=True)
-    # Initially, mag_full_image is zoomed_image resized to the correct size. We
-    # then replace some of the patches with the generated images
-    full_image = F.interpolate(zoomed_image, size=(full_image_width, full_image_width), mode='bilinear', align_corners=False)
-
-    for index, (i, j) in enumerate(patch_pos):
-        y = i * patch_dist
-        x = j * patch_dist
-
-        full_image[0, :, y:y+PATCH_SIZE, x:x+PATCH_SIZE] = mag_images[index][0]
-
-    return full_image
+    generate_image(mag_level, args, cond_image=cond_images, patch_pos=patch_pos, overlap=args.overlap, orientation=orientation, num_patches_width=num_patches_width)
 
 
 def main():
@@ -421,16 +407,12 @@ def main():
     except FileExistsError:
         pass
 
-    sample_id = uuid4()
-
-    mag0_images = generate_image(0, args)
-    save_image(mag0_images[0][0], f'{args.sample_dir}/MAG0-{sample_id}.jpg')
+    for i in range(20):
+        mag0_images = generate_image(0, args)
+        save_image(mag0_images[0][0], f'{args.sample_dir}/{uuid4()}_MAG0.png')
+        generate_high_res_image(mag0_images[0], 1, args)
     
-    mag1_full_image = generate_high_res_image(mag0_images[0], 1, args)
-    save_image(mag1_full_image[0], f'{args.sample_dir}/MAG1-{sample_id}.jpg')
 
-    mag2_full_image = generate_high_res_image(mag1_full_image, 2, args)
-    save_image(mag2_full_image[0], f'{args.sample_dir}/MAG2-{sample_id}.jpg')
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -447,7 +429,6 @@ def parse_args():
     parser.add_argument('--inpaint_resample', type=int)
     parser.add_argument('--overlap', type=float)
     parser.add_argument('--sample_dir', default="samples", type=str)
-    parser.add_argument('--ignore_unet_1', action='store_true')
     return parser.parse_args()
 
 
