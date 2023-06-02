@@ -30,7 +30,7 @@ def normalize_creatinine(x):
 
 
 class PatientDataset(Dataset):
-    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False, transformations=True, unconditional=False):
+    def __init__(self, patient_outcomes, patient_creatinine, svs_dir, h5_path, patch_size=256, image_size=64, annotated_dataset=True, verbose=False, transformations=True, unconditional=False, more_patches=False):
         super().__init__()
 
         self.annotated_dataset = annotated_dataset
@@ -130,7 +130,10 @@ class PatientDataset(Dataset):
 
             # Mask out the background
             img_hs = color.rgb2hsv(small_img)
-            img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
+            if more_patches:
+                img_hs = np.logical_and(img_hs[:, :, 0] > 0.5, img_hs[:, :, 1] > 0.02)
+            else:
+                img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
 
             # Get the positions of the patches that are not background
             patch_positions = np.argwhere(img_hs)

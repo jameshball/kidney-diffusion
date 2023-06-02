@@ -89,7 +89,7 @@ class PatientDataset(Dataset):
 
             # Mask out the background
             img_hs = color.rgb2hsv(small_img)
-            img_hs = np.logical_and(img_hs[:, :, 0] > 0.8, img_hs[:, :, 1] > 0.05)
+            img_hs = np.logical_and(img_hs[:, :, 0] > 0.5, img_hs[:, :, 1] > 0.02)
 
             # Get the positions of the patches that are not background
             patch_positions = np.argwhere(img_hs)
