@@ -38,6 +38,8 @@ def load_model(mag_level, unet_number, device, args):
         from train_ultra_res_v_param import init_imagen
     elif args.version == "v2":
         from train_ultra_res_v2 import init_imagen
+    elif args.version == "airs":
+        from train_ultra_res_airs import init_imagen
     else:
         from train_ultra_res import init_imagen
 

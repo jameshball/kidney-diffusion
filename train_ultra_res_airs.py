@@ -12,7 +12,6 @@ from torch.utils.data import Subset, DataLoader
 import torchvision.transforms as T
 
 from ultra_res_airs import AirsDataset
-from train_ultra_res import unet_generator, init_imagen, log_wandb
 import os
 import pandas as pd
 from glob import glob
@@ -20,6 +19,81 @@ from uuid import uuid4
 
 import re
 import gc
+
+def unet_generator(magnification_level, unet_number):
+    if unet_number == 1:
+        return Unet(
+            dim=256,
+            dim_mults=(1, 2, 3, 4),
+            num_resnet_blocks=3,
+            layer_attns=(False, True, True, True),
+            layer_cross_attns=(False, True, True, True),
+            cond_images_channels=3 if magnification_level > 0 else 0,
+        )
+
+    if unet_number == 2:
+        return Unet(
+            dim=128,
+            dim_mults=(1, 2, 4, 8),
+            num_resnet_blocks=2,
+            memory_efficient=True,
+            layer_attns=(False, False, False, True),
+            layer_cross_attns=(False, False, True, True),
+            init_conv_to_final_conv_residual=True,
+            cond_images_channels=3 if magnification_level > 0 else 0,
+        )
+    
+    if unet_number == 3:
+        return Unet(
+            dim=128,
+            dim_mults=(1, 2, 4, 8),
+            num_resnet_blocks=(2, 4, 6, 8),
+            memory_efficient=True,
+            layer_attns=False,
+            layer_cross_attns=(False, False, False, True),
+            init_conv_to_final_conv_residual=True,
+            cond_images_channels=3 if magnification_level > 0 else 0,
+        )
+
+    return None
+
+
+class FixedNullUnet(NullUnet):
+    def __init__(self, lowres_cond=False, *args, **kwargs):
+        super().__init__()
+        self.lowres_cond = lowres_cond
+        self.dummy_parameter = nn.Parameter(torch.tensor([0.]))
+
+    def cast_model_parameters(self, *args, **kwargs):
+        return self
+
+    def forward(self, x, *args, **kwargs):
+        return x
+
+
+def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
+    imagen = Imagen(
+        unets=(
+            unet_generator(magnification_level, 1) if unet_number == 1 else FixedNullUnet(),
+            unet_generator(magnification_level, 2) if unet_number == 2 else FixedNullUnet(lowres_cond=True),
+            unet_generator(magnification_level, 3) if unet_number == 3 else FixedNullUnet(lowres_cond=True),
+        ),
+        image_sizes=(64, 256, 1024),
+        timesteps=(1024, 256, 256),
+        pred_objectives=("v", "v", "v"),
+        random_crop_sizes=(None, None, 256),
+        condition_on_text=False,
+    ).to(device)
+
+    return imagen
+
+
+def log_wandb(args, cur_step, loss, validation=False):
+    if args.wandb:
+        wandb.log({
+            "loss" if not validation else "val_loss" : loss,
+            "step": cur_step,
+        })
 
 
 def main():

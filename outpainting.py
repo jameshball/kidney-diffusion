@@ -254,7 +254,7 @@ def main():
     sample_id = uuid4()
 
     full_image = generate_high_res_image(args)
-    save_image(full_image[0], f'{args.sample_dir}/outpainting-{sample_id}.png')
+    save_image(full_image[0], f'{args.sample_dir}/outpainting-{sample_id}.jpg')
 
 
 def parse_args():
