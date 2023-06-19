@@ -64,7 +64,12 @@ def sample_patch(img, min_dim, min_scale, max_scale, patch_size, transformation=
     top_left_x = int(x + crop_x / scale)
     top_left_y = int(y + crop_y / scale)
     rect_size = int(patch_size / scale)
-    img = img.read_block((top_left_x, top_left_y, rect_size, rect_size), size=(patch_size, patch_size))
+    try:
+        img = img.read_block((top_left_x, top_left_y, rect_size, rect_size), size=(patch_size, patch_size))
+    except RuntimeError:
+        print(width, height)
+        print(top_left_x, top_left_y, rect_size, rect_size, patch_size, patch_size, transformation, new_transformation)
+        raise
 
     new_transformation['rand_size'] = rand_size
     new_transformation['crop_x'] = crop_x
@@ -93,13 +98,13 @@ def load_and_sample(args, real_files, fake_files, scale_min, scale_max, i):
     real_patch = cv2.cvtColor(real_patch, cv2.COLOR_RGB2BGR)
     real_dir = os.path.join(args.real_output, str(i // 1000))
     if not (os.path.exists(real_dir) and os.path.isdir(real_dir)):
-        os.makedirs(real_dir)
+        os.makedirs(real_dir, exist_ok=True)
     cv2.imwrite(os.path.join(real_dir, f"{i}.png"), real_patch)
 
     fake_patch = cv2.cvtColor(fake_patch, cv2.COLOR_RGB2BGR)
     fake_dir = os.path.join(args.fake_output, str(i // 1000))
     if not (os.path.exists(fake_dir) and os.path.isdir(fake_dir)):
-        os.makedirs(fake_dir)
+        os.makedirs(fake_dir, exist_ok=True)
     cv2.imwrite(os.path.join(fake_dir, f"{i}.png"), fake_patch)
 
 
@@ -121,11 +126,12 @@ def main():
     real_path = pathlib.Path(args.real_path)
     real_files = sorted(real_path.glob(f"*.svs"))
     fake_path = pathlib.Path(args.fake_path)
-    fake_files = sorted(fake_path.glob(f"*.png"))
+    fake_files = sorted(fake_path.glob(f"*.jpg"))
     print(f"sampling from {len(real_files)} real files and {len(fake_files)} fake files")
 
     result = Parallel(n_jobs=128)(delayed(load_and_sample)(args, real_files, fake_files, scale_min, scale_max, i) for i in tqdm(range(args.num_files)))
 
+    # result = [load_and_sample(args, real_files, fake_files, scale_min, scale_max, i) for i in tqdm(range(args.num_files))]
 
 if __name__ == '__main__':
     main()
