@@ -258,6 +258,7 @@ def parse_args():
     parser.add_argument('--resume', action='store_true', help='Resume previous run using wandb')
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument('--unconditional', action='store_true')
     return parser.parse_args()
 
 

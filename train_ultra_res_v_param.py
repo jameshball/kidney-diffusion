@@ -28,7 +28,7 @@ def unet_generator(magnification_level, unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
-            dim_mults=(1, 2, 4, 8),
+            dim_mults=(1, 2, 3, 4),
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
@@ -84,7 +84,7 @@ def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
-        pred_objectives=("noise", "noise", "noise"),
+        pred_objectives=("noise", "v", "v"),
         random_crop_sizes=(None, None, 256),
         condition_on_text=False,
     ).to(device)

@@ -32,7 +32,7 @@ def unet_generator(magnification_level, unet_number):
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
-            cond_images_channels=3 if magnification_level > 0 else 0,
+            cond_images_channels=6 if magnification_level > 0 else 0,
         )
 
     if unet_number == 2:
@@ -44,7 +44,7 @@ def unet_generator(magnification_level, unet_number):
             layer_attns=(False, False, False, True),
             layer_cross_attns=(False, False, True, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if magnification_level > 0 else 0,
+            cond_images_channels=6 if magnification_level > 0 else 0,
         )
     
     if unet_number == 3:
@@ -56,7 +56,7 @@ def unet_generator(magnification_level, unet_number):
             layer_attns=False,
             layer_cross_attns=(False, False, False, True),
             init_conv_to_final_conv_residual=True,
-            cond_images_channels=3 if magnification_level > 0 else 0,
+            cond_images_channels=6 if magnification_level > 0 else 0,
         )
 
     return None
@@ -103,7 +103,7 @@ def main():
 
     if args.wandb:
         import wandb
-    
+
     imagen = init_imagen(args.magnification_level, args.unet_number)
     dl_keywords = ('images',) if args.magnification_level == 0 else ('images', 'cond_images')
     trainer = ImagenTrainer(
@@ -139,7 +139,7 @@ def main():
     patient_labelled_dir = f'{args.data_path}/results.h5'
 
     # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level)
+    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level, center_cond=True)
     trainer.accelerator.print('Using UNANNOTATED dataset for magnification level ' + str(args.magnification_level))
 
 

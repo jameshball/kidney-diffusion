@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.data import Subset, DataLoader
 import torchvision.transforms as T
 
-from ultra_res_patient_dataset import PatientDataset
+from ultra_res_airs import AirsDataset
 import os
 import pandas as pd
 from glob import glob
@@ -20,15 +20,11 @@ from uuid import uuid4
 import re
 import gc
 
-
-SPLIT_VALID_FRACTION = 0.025
-
-
 def unet_generator(magnification_level, unet_number):
     if unet_number == 1:
         return Unet(
             dim=256,
-            dim_mults=(1, 2, 4, 8),
+            dim_mults=(1, 2, 3, 4),
             num_resnet_blocks=3,
             layer_attns=(False, True, True, True),
             layer_cross_attns=(False, True, True, True),
@@ -84,12 +80,13 @@ def init_imagen(magnification_level, unet_number, device=torch.device("cuda")):
         ),
         image_sizes=(64, 256, 1024),
         timesteps=(1024, 256, 256),
-        pred_objectives=("noise", "noise", "noise"),
+        pred_objectives=("v", "v", "v"),
         random_crop_sizes=(None, None, 256),
         condition_on_text=False,
     ).to(device)
 
     return imagen
+
 
 def log_wandb(args, cur_step, loss, validation=False):
     if args.wandb:
@@ -97,6 +94,7 @@ def log_wandb(args, cur_step, loss, validation=False):
             "loss" if not validation else "val_loss" : loss,
             "step": cur_step,
         })
+
 
 def main():
     args = parse_args()
@@ -114,45 +112,17 @@ def main():
         max_grad_norm=1,
     )
 
-    # Load the patient outcomes
-    patient_outcomes = pd.read_excel(f'{args.data_path}/outcomes.xlsx', 'Sheet1')
+    ignore_list = ['christchurch_1003.tif', 'christchurch_1020.tif', 'christchurch_374.tif', 'christchurch_405.tif', 'christchurch_436.tif', 'christchurch_467.tif', 'christchurch_530.tif', 'christchurch_562.tif', 'christchurch_595.tif', 'christchurch_628.tif', 'christchurch_662.tif', 'christchurch_731.tif', 'christchurch_806.tif', 'christchurch_844.tif', 'christchurch_882.tif', 'christchurch_920.tif', 'christchurch_957.tif', 'christchurch_982.tif', 'christchurch_1067.tif', 'christchurch_498.tif', 'christchurch_696.tif']
 
-    # Filter any patients that don't have an SVS file
-    slide_ids = [re.sub(r'\.svs', '', os.path.basename(slide)) for slide in glob(f'{args.data_path}/svs/*.svs')]
-    patient_outcomes = patient_outcomes[patient_outcomes['slide_UUID'].isin(slide_ids)]
-
-    # Load all patient creatinine files
-    creatinine_files = glob(f'{args.data_path}/creatinine/*.xlsx')
-    patient_creatinine = {}
-    for file in creatinine_files:
-        df = pd.read_excel(file, 'Sheet1')
-        file_name = os.path.basename(file)
-        patient_id = re.sub(r'\.xlsx$', '', file_name)
-        patient_creatinine[patient_id] = df
-
-    # Filter any creatinine files that don't have an outcome
-    patient_creatinine = {k: v for k, v in patient_creatinine.items() if k in patient_outcomes['patient_UUID'].values}
-
-    trainer.accelerator.print(f'Found {len(patient_outcomes)} patients with SVS files')
-
-    # Load the labelled data from the h5 labelbox download
-    patient_labelled_dir = f'{args.data_path}/results.h5'
-
-    # Initialise PatientDataset
-    dataset = PatientDataset(patient_outcomes, patient_creatinine, f'{args.data_path}/svs/', patient_labelled_dir, args.magnification_level)
-    trainer.accelerator.print('Using UNANNOTATED dataset for magnification level ' + str(args.magnification_level))
-
-
-    train_size = int((1 - SPLIT_VALID_FRACTION) * len(dataset))
-    indices = list(range(len(dataset)))
-    train_dataset = Subset(dataset, np.random.permutation(indices[:train_size]))
-    valid_dataset = Subset(dataset, np.random.permutation(indices[train_size:]))
+    train_dataset = AirsDataset(f'{args.data_path}/train/image', ignore_list, args.magnification_level, verbose=True)
+    valid_dataset = AirsDataset(f'{args.data_path}/val/image', ignore_list, args.magnification_level, verbose=True)
+    test_dataset = AirsDataset(f'{args.data_path}/test/image', ignore_list, args.magnification_level, verbose=True)
 
     trainer.accelerator.print(f'training with dataset of {len(train_dataset)} samples and validating with {len(valid_dataset)} samples')
 
 
-    trainer.add_train_dataset(train_dataset, batch_size=8, num_workers=args.num_workers)
-    trainer.add_valid_dataset(valid_dataset, batch_size=8, num_workers=args.num_workers)
+    trainer.add_train_dataset(train_dataset, batch_size=8, num_workers=args.num_workers, shuffle=True)
+    trainer.add_valid_dataset(valid_dataset, batch_size=8, num_workers=args.num_workers, shuffle=True)
 
     if args.unet_number == 1:
         checkpoint_path = args.unet1_checkpoint
@@ -215,11 +185,11 @@ def main():
                 lowres_zoomed_image = None
                 rand_zoomed_image = None
                 if args.magnification_level == 0:
-                    lowres_image = dataset[0]
-                    rand_image = dataset[np.random.randint(len(dataset))]
+                    lowres_image = test_dataset[0]
+                    rand_image = train_dataset[np.random.randint(len(train_dataset))]
                 else:
-                    lowres_image, lowres_zoomed_image = dataset[0]
-                    rand_image, rand_zoomed_image = dataset[np.random.randint(len(dataset))]
+                    lowres_image, lowres_zoomed_image = test_dataset[0]
+                    rand_image, rand_zoomed_image = train_dataset[np.random.randint(len(train_dataset))]
 
                 with torch.no_grad():
                     if lowres_zoomed_image == None:
