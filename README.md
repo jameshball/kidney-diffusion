@@ -1,2 +1,2 @@
 # kidney-diffusion
-Generating Kidney Tissue Images Using Diffusion Models Conditioned on Clinical Parameters
+Generating Histopathology Images With Segmentation Masks, and Gigapixel Images With Ultra-Resolution Cascaded Diffusion Models
