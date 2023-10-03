@@ -110,7 +110,7 @@ tqdm==4.64.1
 transformers==4.25.1
 triton==2.0.0
 typing-extensions==4.4.0
-urllib3==1.26.13
+urllib3==1.26.17
 wandb==0.14.0
 Werkzeug==2.2.2
 xxhash==3.1.0
